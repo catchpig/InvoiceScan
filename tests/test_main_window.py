@@ -1,5 +1,5 @@
 from models.invoice import Invoice, InvoiceStatus
-from ui.main_window import _find_duplicates
+from ui.main_window import _find_duplicates, _STATUS_LABELS
 
 
 def test_find_duplicates_same_code_and_number():
@@ -38,7 +38,6 @@ def test_find_duplicates_reports_each_key_once():
 
 
 def test_status_labels_covers_all_statuses():
-    from ui.main_window import _STATUS_LABELS
     for status in [
         InvoiceStatus.PENDING, InvoiceStatus.PROCESSING,
         InvoiceStatus.SUCCESS, InvoiceStatus.REVIEW, InvoiceStatus.FAILED,
@@ -50,7 +49,6 @@ def test_status_labels_covers_all_statuses():
 
 
 def test_status_labels_text_values():
-    from ui.main_window import _STATUS_LABELS
     assert _STATUS_LABELS[InvoiceStatus.PENDING][0]    == "等待"
     assert _STATUS_LABELS[InvoiceStatus.PROCESSING][0] == "识别中"
     assert _STATUS_LABELS[InvoiceStatus.SUCCESS][0]    == "完成"
