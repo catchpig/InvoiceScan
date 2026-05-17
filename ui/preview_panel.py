@@ -28,6 +28,7 @@ _DECIMAL_FIELDS = {"subtotal", "tax_amount", "total_amount"}
 
 class PreviewPanel(QWidget):
     invoice_changed = pyqtSignal(Invoice)
+    export_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -58,6 +59,9 @@ class PreviewPanel(QWidget):
         save_btn = QPushButton("保存修改", self)
         save_btn.clicked.connect(self._on_save)
         btn_row.addWidget(save_btn)
+        export_btn = QPushButton("导出 Excel", self)
+        export_btn.clicked.connect(self.export_requested)
+        btn_row.addWidget(export_btn)
         layout.addLayout(btn_row)
 
     def show_invoice(self, invoice: Invoice) -> None:

@@ -2,7 +2,7 @@ import os
 import logging
 from PyQt6.QtWidgets import (
     QMainWindow, QListWidget, QListWidgetItem, QToolBar,
-    QStatusBar, QFileDialog, QMessageBox, QSplitter, QLabel, QPushButton,
+    QStatusBar, QFileDialog, QMessageBox, QSplitter, QLabel,
 )
 from PyQt6.QtCore import Qt, QThread, QObject, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QDragEnterEvent, QDropEvent
@@ -122,6 +122,7 @@ class MainWindow(QMainWindow):
 
         self._preview = PreviewPanel(self)
         self._preview.invoice_changed.connect(self._on_invoice_changed)
+        self._preview.export_requested.connect(self._on_export)
         splitter.addWidget(self._preview)
         splitter.setSizes([350, 650])
 
@@ -129,9 +130,6 @@ class MainWindow(QMainWindow):
         self.setStatusBar(status_bar)
         self._stats_label = QLabel("文件数: 0", self)
         status_bar.addWidget(self._stats_label)
-        export_btn = QPushButton("导出 Excel", self)
-        export_btn.clicked.connect(self._on_export)
-        status_bar.addPermanentWidget(export_btn)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls():
