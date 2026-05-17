@@ -21,6 +21,14 @@ _STATUS_ICONS = {
     InvoiceStatus.FAILED:     "✗",
 }
 
+_STATUS_LABELS: dict[str, tuple[str, str]] = {
+    InvoiceStatus.PENDING:    ("等待",   "#888888"),
+    InvoiceStatus.PROCESSING: ("识别中", "#4a9eff"),
+    InvoiceStatus.SUCCESS:    ("完成",   "#4caf50"),
+    InvoiceStatus.REVIEW:     ("需复核", "#ff9800"),
+    InvoiceStatus.FAILED:     ("失败",   "#f44336"),
+}
+
 
 def _find_duplicates(invoices: list[Invoice]) -> list[tuple[str, str]]:
     seen: dict[tuple[str, str], bool] = {}
