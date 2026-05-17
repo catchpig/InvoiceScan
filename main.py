@@ -3,12 +3,13 @@ import traceback
 import logging
 import os
 
-logging.basicConfig(
-    filename=os.path.join(os.path.dirname(__file__), 'app.log'),
-    level=logging.DEBUG,
-    format='%(asctime)s %(levelname)s %(message)s',
-    encoding='utf-8',
-)
+_log_fmt = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+
+_console_handler = logging.StreamHandler()
+_console_handler.setLevel(logging.DEBUG)
+_console_handler.setFormatter(_log_fmt)
+
+logging.basicConfig(level=logging.DEBUG, handlers=[_console_handler])
 
 def _excepthook(exc_type, exc_value, exc_tb):
     msg = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
