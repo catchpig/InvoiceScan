@@ -96,6 +96,6 @@ def test_parse_empty_texts_returns_failed():
     assert inv.error_message != ""
 
 
-def test_parse_missing_code_returns_review():
-    texts = [t for t in SAMPLE_TEXTS if "发票代码" not in t]
+def test_parse_missing_number_returns_review():
+    texts = [t for t in SAMPLE_TEXTS if "发票号码" not in t]
     assert InvoiceParser().parse(texts, "test.pdf").status == InvoiceStatus.REVIEW

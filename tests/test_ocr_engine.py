@@ -44,7 +44,7 @@ def test_parse_ocr_result_filters_low_confidence():
     engine, _ = _make_engine_with_mock_reader()
     result_data = [
         ([[0, 0], [1, 0], [1, 1], [0, 1]], "高置信度文本", 0.95),
-        ([[0, 0], [1, 0], [1, 1], [0, 1]], "低置信度文本", 0.50),
+        ([[0, 0], [1, 0], [1, 1], [0, 1]], "低置信度文本", 0.001),
     ]
     texts = engine._parse_ocr_result(result_data)
     assert "高置信度文本" in texts

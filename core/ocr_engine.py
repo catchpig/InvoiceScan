@@ -1,8 +1,8 @@
 import os
-import tempfile
 
-_CONFIDENCE_THRESHOLD = 0.80
+_CONFIDENCE_THRESHOLD = 0.002
 _PDF_DPI = 200
+_UPSCALE_THRESHOLD = 1600  # 宽度低于此值时 2x 放大
 
 # 自动发现项目本地的 poppler bin 目录（Windows 免安装）
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -45,14 +45,16 @@ class OcrEngine:
         return self._extract_from_pil_image(img)
 
     def _extract_from_pil_image(self, img) -> list[str]:
-        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
-            tmp_path = tmp.name
-            img.save(tmp_path)
-        try:
-            result = self._reader.readtext(tmp_path)
-            return self._parse_ocr_result(result)
-        finally:
-            os.unlink(tmp_path)
+        import numpy as np
+        from PIL import Image, ImageEnhance, ImageFilter
+        img = img.convert('RGB')
+        if img.width < _UPSCALE_THRESHOLD:
+            img = img.resize((img.width * 2, img.height * 2), Image.LANCZOS)
+        img = ImageEnhance.Contrast(img).enhance(1.5)
+        img = img.filter(ImageFilter.SHARPEN)
+        img_array = np.array(img)
+        result = self._reader.readtext(img_array)
+        return self._parse_ocr_result(result)
 
     def _parse_ocr_result(self, result) -> list[str]:
         # EasyOCR 返回格式：[(bbox, text, confidence), ...]

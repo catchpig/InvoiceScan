@@ -5,20 +5,24 @@ from models.invoice import Invoice, InvoiceStatus
 _INVOICE_TYPES = [
     "增值税专用发票", "增值税普通发票",
     "增值税电子专用发票", "增值税电子普通发票",
+    "电子发票", "普通发票",
 ]
 
-_RE_CODE     = re.compile(r'发票代码[：:]\s*(\d{10,12})')
-_RE_NUMBER   = re.compile(r'发票号码[：:]\s*(\d{7,8})')
-_RE_DATE     = re.compile(r'开票日期[：:]\s*(\d{4})年(\d{1,2})月(\d{1,2})日')
-_RE_TAX_ID   = re.compile(r'纳税人识别号[：:]\s*([A-Za-z0-9]{15,20})')
-_RE_TAX_RATE   = re.compile(r'税率\s*[：:]?\s*(\d+%|免税|零税率)')
-_RE_TOTAL_LOWER = re.compile(r'[（(]小写[）)]\s*[¥￥]\s*([\d,]+\.?\d*)')
-_RE_AMOUNT     = re.compile(r'[¥￥]\s*([\d,]+\.?\d*)')
-_RE_TAX_AMOUNT = re.compile(r'税额\s*\n\s*[¥￥]\s*([\d,]+\.?\d*)')
-_RE_SUBTOTAL   = re.compile(r'合计\s*\n\s*[¥￥]\s*([\d,]+\.?\d*)')
-_RE_ISSUER     = re.compile(r'开票人[：:]\s*(.+)')
+_RE_CODE        = re.compile(r'发票代码[：:]\s*(\d{10,12})')
+_RE_NUMBER      = re.compile(r'(?:发票号码|岌采号[玛码罚])[：:]\s*[_]?\s*(\d{7,20})')
+_RE_NUMBER_LONG = re.compile(r'(?<!\d)(\d{20})(?!\d)')
+_RE_DATE        = re.compile(r'(?:开票|开采)日期[：:]\s*(\d{4})[年](\d{1,2})[月](\d{1,2})[日0]?')
+_RE_TAX_ID      = re.compile(r'(?:纳税人识别号|统一社会信用代码)[：:]\s*([A-Za-z0-9]{15,20})')
+_RE_TAX_RATE    = re.compile(r'税率\s*[：:]?\s*(\d+%|免税|零税率)')
+_RE_TOTAL_LOWER = re.compile(r'[（(](?:小写|小召)[）)]\s*[¥￥4]?\s*([\d,]+\.?\d*)')
+_RE_AMOUNT      = re.compile(r'[¥￥]\s*([\d,]+\.?\d*)')
+_RE_TAX_AMOUNT  = re.compile(r'税额\s*\n\s*[¥￥]\s*([\d,]+\.?\d*)')
+_RE_SUBTOTAL    = re.compile(r'合计\s*\n\s*[¥￥]\s*([\d,]+\.?\d*)')
+# 从 OCR 输出的 "合\n计\n{金额}\n{税额}" 行结构中提取税额
+_RE_TAX_IN_TOTAL_ROW = re.compile(r'合\n计\n[\d,.]+\n([\d,.]+)')
+_RE_ISSUER      = re.compile(r'(?:开票|开采)[柔]?人[：:]\s*(.+)')
 
-_REQUIRED_FIELDS = ['invoice_code', 'invoice_number', 'invoice_date', 'buyer_name', 'seller_name']
+_REQUIRED_FIELDS = ['invoice_number', 'invoice_date', 'buyer_name', 'seller_name']
 
 
 class InvoiceParser:
@@ -31,22 +35,32 @@ class InvoiceParser:
             )
 
         full_text = '\n'.join(texts)
+        full_text = self._normalize_text(full_text)
         invoice = Invoice(source_file=source_file)
 
         invoice.invoice_type   = self._find_invoice_type(texts)
         invoice.invoice_code   = self._search(full_text, _RE_CODE, 1)
-        invoice.invoice_number = self._search(full_text, _RE_NUMBER, 1)
+        invoice.invoice_number = self._extract_invoice_number(full_text)
         invoice.invoice_date   = self._extract_date(full_text)
         invoice.buyer_name, invoice.buyer_tax_id   = self._extract_party(full_text, "购买方", 0)
         invoice.seller_name, invoice.seller_tax_id = self._extract_party(full_text, "销售方", 1)
         invoice.tax_rate       = self._search(full_text, _RE_TAX_RATE, 1)
         invoice.total_amount   = self._extract_total(full_text)
         invoice.tax_amount, invoice.subtotal = self._extract_sub_amounts(full_text)
+        if invoice.total_amount and invoice.tax_amount and not invoice.subtotal:
+            invoice.subtotal = invoice.total_amount - invoice.tax_amount
         issuer_raw             = self._search(full_text, _RE_ISSUER, 1)
         invoice.issuer         = issuer_raw.strip()
 
         invoice.status = self._determine_status(invoice)
         return invoice
+
+    def _normalize_text(self, text: str) -> str:
+        # 修正年份：?026年 → 2026年（OCR 将 '2' 误读为 '?'）
+        text = re.sub(r'[？?]0(\d{2})年', r'20\1年', text)
+        # 修正日期中被丢失的十位数字：月.3日 → 月13日（'1' 被误读为 '.'）
+        text = re.sub(r'(\d{1,2}月)\.(\d)日', r'\g<1>1\2日', text)
+        return text
 
     def _find_invoice_type(self, texts: list[str]) -> str:
         for text in texts:
@@ -59,6 +73,14 @@ class InvoiceParser:
         m = pattern.search(text)
         return m.group(group) if m else ""
 
+    def _extract_invoice_number(self, text: str) -> str:
+        m = _RE_NUMBER.search(text)
+        if m:
+            return m.group(1)
+        # 回退：查找 20 位连续数字（新版全电发票号码格式）
+        m = _RE_NUMBER_LONG.search(text)
+        return m.group(1) if m else ""
+
     def _extract_date(self, text: str) -> str:
         m = _RE_DATE.search(text)
         if not m:
@@ -68,7 +90,17 @@ class InvoiceParser:
     def _extract_party(self, text: str, party: str, tax_index: int) -> tuple[str, str]:
         name_pat = re.compile(rf'{party}名称[：:]\s*(.+)')
         m = name_pat.search(text)
-        name = m.group(1).strip() if m else ""
+        if m:
+            name = m.group(1).strip()
+        else:
+            # 回退：按出现顺序使用 "名称：" 匹配（购买方=第0个，销售方=第1个）
+            # 使用非贪婪匹配，避免把公司名首字被归入前缀
+            all_names = re.findall(r'名.{0,3}?[：:]\s*(.+)', text)
+            party_idx = 0 if '购买' in party else 1
+            raw = all_names[party_idx].strip() if len(all_names) > party_idx else ""
+            # 去除 OCR 在公司名中残留的冒号（字符误识别产物）
+            name = re.sub(r'[：:]', '', raw).strip()
+
         tax_ids = _RE_TAX_ID.findall(text)
         tax_id = tax_ids[tax_index] if len(tax_ids) > tax_index else ""
         return name, tax_id
@@ -81,7 +113,7 @@ class InvoiceParser:
         return self._to_decimal(amounts[-1]) if amounts else Decimal("0")
 
     def _extract_sub_amounts(self, text: str) -> tuple[Decimal, Decimal]:
-        # 优先按语义标签提取（税额在"税额"标签之后）
+        # 优先：带 ¥ 标签的精确提取
         tax_m = _RE_TAX_AMOUNT.search(text)
         if tax_m:
             tax = self._to_decimal(tax_m.group(1))
@@ -89,7 +121,12 @@ class InvoiceParser:
             subtotal = self._to_decimal(sub_m.group(1)) if sub_m else Decimal("0")
             return tax, subtotal
 
-        # 回退：取所有金额列表，排除 total，取最后两个
+        # 次选：从 "合\n计\n{小计}\n{税额}" 行结构提取税额（OCR 无 ¥ 时）
+        tax_m = _RE_TAX_IN_TOTAL_ROW.search(text)
+        if tax_m:
+            return self._to_decimal(tax_m.group(1)), Decimal("0")
+
+        # 最后回退：取所有 ¥ 金额列表的最后两个
         amounts = _RE_AMOUNT.findall(text)
         total_m = _RE_TOTAL_LOWER.search(text)
         total_str = total_m.group(1) if total_m else ""
