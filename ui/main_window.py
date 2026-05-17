@@ -217,7 +217,7 @@ class MainWindow(QMainWindow):
 
     def _on_invoice_changed(self, invoice: Invoice) -> None:
         row = self._file_list.currentRow()
-        if 0 <= row < len(self._invoices):
+        if 0 <= row < len(self._invoices) and row < len(self._item_widgets):
             self._invoices[row] = invoice
             self._item_widgets[row].update_status(invoice.source_file, invoice.status)
 
