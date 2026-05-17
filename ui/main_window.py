@@ -49,6 +49,7 @@ class _OcrWorker(QObject):
         self._cancelled = False
 
     def cancel(self) -> None:
+        logging.info("Worker: cancel requested")
         self._cancelled = True
 
     def run(self) -> None:
@@ -158,6 +159,7 @@ class MainWindow(QMainWindow):
             self._add_files(paths)
 
     def _on_clear(self) -> None:
+        logging.info("File list cleared (%d files)", len(self._file_paths))
         self._file_paths.clear()
         self._invoices.clear()
         self._file_list.clear()
@@ -166,12 +168,16 @@ class MainWindow(QMainWindow):
 
     def _add_files(self, paths: list[str]) -> None:
         existing = set(self._file_paths)
+        added = 0
         for path in paths:
             if path not in existing:
                 self._file_paths.append(path)
                 self._invoices.append(Invoice(source_file=os.path.basename(path)))
                 icon = _STATUS_ICONS[InvoiceStatus.PENDING]
                 self._file_list.addItem(QListWidgetItem(f"{icon} {os.path.basename(path)}"))
+                added += 1
+        if added:
+            logging.info("Added %d file(s), total=%d", added, len(self._file_paths))
         self._update_stats()
 
     def _on_file_selected(self, row: int) -> None:
@@ -189,15 +195,20 @@ class MainWindow(QMainWindow):
         if not self._file_paths:
             QMessageBox.information(self, "提示", "请先添加发票文件")
             return
+        logging.info("OCR started: %d file(s)", len(self._file_paths))
         self._progress_dlg = ProgressDialog(len(self._file_paths), self)
         self._worker = _OcrWorker(self._file_paths)
-        self._thread = QThread(self)
+        self._thread = QThread()  # 无父对象，由 deleteLater 管理生命周期
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.model_status.connect(self._on_model_status)
         self._worker.progress.connect(self._on_ocr_progress)
         self._worker.invoice_done.connect(self._on_invoice_done)
         self._worker.finished.connect(self._on_ocr_finished)
+        # Qt 标准清理模式：让信号驱动线程退出和对象销毁，避免主线程 wait() 阻塞崩溃
+        self._worker.finished.connect(self._thread.quit)
+        self._worker.finished.connect(self._worker.deleteLater)
+        self._thread.finished.connect(self._thread.deleteLater)
         self._progress_dlg.rejected.connect(self._worker.cancel)
         # 用 singleShot(0) 确保 exec() 先建好事件循环再启动线程，
         # 避免 RapidOCR 过快完成时信号堆积导致弹窗"闪退"
@@ -227,17 +238,16 @@ class MainWindow(QMainWindow):
         self._update_stats()
 
     def _on_ocr_finished(self) -> None:
-        logging.info("_on_ocr_finished: start")
-        self._thread.quit()
-        logging.info("_on_ocr_finished: after quit")
-        self._thread.wait(3000)
-        logging.info("_on_ocr_finished: after wait")
+        success = sum(1 for i in self._invoices if i.status == InvoiceStatus.SUCCESS)
+        review  = sum(1 for i in self._invoices if i.status == InvoiceStatus.REVIEW)
+        failed  = sum(1 for i in self._invoices if i.status == InvoiceStatus.FAILED)
+        logging.info("OCR finished: total=%d success=%d review=%d failed=%d",
+                     len(self._invoices), success, review, failed)
         self._progress_dlg.close()
-        logging.info("_on_ocr_finished: after close")
         self._update_stats()
-        logging.info("_on_ocr_finished: after update_stats")
         duplicates = _find_duplicates(self._invoices)
         if duplicates:
+            logging.warning("Duplicate invoices detected: %s", duplicates)
             msg = "检测到重复发票：\n" + "\n".join(
                 f"发票代码 {code}  号码 {num}" for code, num in duplicates
             )
@@ -256,12 +266,16 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(self, "保存 Excel", "", "Excel 文件 (*.xlsx)")
         if not path:
             return
+        logging.info("Export: mode=%s path=%s invoices=%d", mode.name, path, len(self._invoices))
         try:
             Exporter().export(self._invoices, path, mode)
+            logging.info("Export succeeded: %s", path)
             QMessageBox.information(self, "导出成功", f"已保存到：{path}")
         except PermissionError:
+            logging.error("Export failed (PermissionError): %s", path)
             QMessageBox.critical(self, "导出失败", f"文件被占用，请关闭 {path} 后重试")
         except Exception as exc:
+            logging.exception("Export failed: %s", path)
             QMessageBox.critical(self, "导出失败", str(exc))
 
     def _update_stats(self) -> None:

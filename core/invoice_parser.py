@@ -1,4 +1,5 @@
 import re
+import logging
 from decimal import Decimal, InvalidOperation
 from models.invoice import Invoice, InvoiceStatus
 
@@ -29,7 +30,9 @@ _REQUIRED_FIELDS = ['invoice_number', 'invoice_date', 'buyer_name', 'seller_name
 
 class InvoiceParser:
     def parse(self, texts: list[str], source_file: str) -> Invoice:
+        logging.debug("Parser.parse: %d OCR texts for %s", len(texts), source_file)
         if not texts:
+            logging.warning("Parser.parse: no OCR texts for %s", source_file)
             return Invoice(
                 source_file=source_file,
                 status=InvoiceStatus.FAILED,
@@ -57,6 +60,22 @@ class InvoiceParser:
         invoice.issuer         = issuer_raw.strip()
 
         invoice.status = self._determine_status(invoice)
+
+        logging.info(
+            "Parsed %s: status=%s type=%s code=%s number=%s date=%s",
+            source_file, invoice.status, invoice.invoice_type,
+            invoice.invoice_code, invoice.invoice_number, invoice.invoice_date,
+        )
+        logging.debug(
+            "  buyer=%r tax_id=%r | seller=%r tax_id=%r",
+            invoice.buyer_name, invoice.buyer_tax_id,
+            invoice.seller_name, invoice.seller_tax_id,
+        )
+        logging.debug(
+            "  tax_rate=%s total=%s tax=%s subtotal=%s issuer=%r",
+            invoice.tax_rate, invoice.total_amount,
+            invoice.tax_amount, invoice.subtotal, invoice.issuer,
+        )
         return invoice
 
     def _normalize_text(self, text: str) -> str:
@@ -115,6 +134,7 @@ class InvoiceParser:
         m = name_pat.search(text)
         if m:
             name = m.group(1).strip()
+            logging.debug("  %s name (direct): %r", party, name)
         else:
             # 次选：在"购买方信息"或"销售方信息" section 内查找紧随的名称行
             # re.DOTALL 让 .{0,200}? 能跨行匹配，[^\n]+ 限制捕获到行尾
@@ -122,15 +142,17 @@ class InvoiceParser:
             m = section_pat.search(text)
             if m:
                 name = re.sub(r'[：:]', '', m.group(1)).strip()
+                logging.debug("  %s name (section): %r", party, name)
             else:
                 # 最终回退：按出现顺序使用 "名称：" 匹配（购买方=第0个，销售方=第1个）
                 all_names = re.findall(r'名.{0,3}?[：:]\s*([^\n]+)', text)
                 party_idx = 0 if '购买' in party else 1
                 raw = all_names[party_idx].strip() if len(all_names) > party_idx else ""
                 name = re.sub(r'[：:]', '', raw).strip()
+                logging.debug("  %s name (fallback idx=%d, all=%s): %r",
+                              party, party_idx, all_names, name)
 
         # 税号：优先从对应方的 section 内查找，避免买方无税号时索引偏移
-        section_boundary = '销售方信息' if '购买' in party else None
         if '购买' in party:
             sec_m = re.search(r'购买方信息([\s\S]*?)(?:销售方信息|$)', text)
         else:
@@ -138,9 +160,12 @@ class InvoiceParser:
         if sec_m:
             ids_in_sec = _RE_TAX_ID.findall(sec_m.group(1))
             tax_id = ids_in_sec[0] if ids_in_sec else ""
+            logging.debug("  %s tax_id (section): %r (found=%s)", party, tax_id, ids_in_sec)
         else:
             tax_ids = _RE_TAX_ID.findall(text)
             tax_id = tax_ids[tax_index] if len(tax_ids) > tax_index else ""
+            logging.debug("  %s tax_id (fallback idx=%d, all=%s): %r",
+                          party, tax_index, tax_ids, tax_id)
         return name, tax_id
 
     def _extract_total(self, text: str) -> Decimal:
@@ -182,11 +207,16 @@ class InvoiceParser:
     def _determine_status(self, invoice: Invoice) -> str:
         missing = [f for f in _REQUIRED_FIELDS if not getattr(invoice, f)]
         if missing:
+            logging.info("  status=REVIEW: missing fields %s", missing)
             return InvoiceStatus.REVIEW
 
         if invoice.subtotal and invoice.tax_amount:
             expected = invoice.subtotal + invoice.tax_amount
             if abs(expected - invoice.total_amount) > Decimal("0.01"):
+                logging.info(
+                    "  status=REVIEW: amount mismatch subtotal(%s)+tax(%s)=%s != total(%s)",
+                    invoice.subtotal, invoice.tax_amount, expected, invoice.total_amount,
+                )
                 return InvoiceStatus.REVIEW
 
         return InvoiceStatus.SUCCESS

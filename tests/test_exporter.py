@@ -2,7 +2,8 @@ import os
 import tempfile
 import openpyxl
 from decimal import Decimal
-from core.exporter import Exporter, ExportMode
+from openpyxl.utils import get_column_letter
+from core.exporter import Exporter, ExportMode, _MIN_COL_WIDTH, _MAX_COL_WIDTH
 from models.invoice import Invoice, InvoiceItem, InvoiceStatus
 
 
@@ -100,5 +101,54 @@ def test_export_invoice_without_items_detail():
     try:
         Exporter().export([inv], path, ExportMode.DETAIL)
         assert openpyxl.load_workbook(path).active.max_row == 2
+    finally:
+        os.unlink(path)
+
+
+# --- 列宽相关测试 ---
+
+def test_display_width_accuracy():
+    assert Exporter._display_width("abc") == 3.0
+    assert Exporter._display_width("购买方") == 6.0
+    assert Exporter._display_width("INV001 发票") == 11.0
+    assert Exporter._display_width("") == 0.0
+    assert Exporter._display_width(None) == 0.0
+
+
+def test_column_widths_expand_for_long_text():
+    inv = _make_invoice()
+    inv.buyer_name = "深圳市超长示例公司名称科技发展有限责任公司"  # 15 个汉字 = 显示宽度 30
+    with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
+        path = f.name
+    try:
+        Exporter().export([inv], path, ExportMode.SUMMARY)
+        ws = openpyxl.load_workbook(path).active
+        buyer_col = get_column_letter(6)  # 购买方名称是第 6 列
+        assert ws.column_dimensions[buyer_col].width > Exporter._display_width("购买方名称")
+    finally:
+        os.unlink(path)
+
+
+def test_column_widths_capped_at_max():
+    inv = _make_invoice()
+    inv.source_file = "C:\\" + "a" * 200 + ".pdf"  # 超长路径
+    with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
+        path = f.name
+    try:
+        Exporter().export([inv], path, ExportMode.SUMMARY)
+        ws = openpyxl.load_workbook(path).active
+        assert ws.column_dimensions[get_column_letter(1)].width <= _MAX_COL_WIDTH
+    finally:
+        os.unlink(path)
+
+
+def test_all_columns_have_min_width():
+    with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
+        path = f.name
+    try:
+        Exporter().export([_make_invoice()], path, ExportMode.SUMMARY)
+        ws = openpyxl.load_workbook(path).active
+        for col_idx in range(1, ws.max_column + 1):
+            assert ws.column_dimensions[get_column_letter(col_idx)].width >= _MIN_COL_WIDTH
     finally:
         os.unlink(path)
