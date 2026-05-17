@@ -19,6 +19,7 @@ sys.excepthook = _excepthook
 
 from PyQt6.QtWidgets import QApplication
 from ui.main_window import MainWindow
+from ui.theme import STYLESHEET
 
 
 def main() -> None:
@@ -26,6 +27,7 @@ def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("发票扫描识别系统")
     app.setStyle("Fusion")
+    app.setStyleSheet(STYLESHEET)
     window = MainWindow()
     window.show()
     logging.info("Main window shown")

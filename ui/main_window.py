@@ -3,30 +3,51 @@ import logging
 from PyQt6.QtWidgets import (
     QMainWindow, QListWidget, QListWidgetItem, QToolBar,
     QStatusBar, QFileDialog, QMessageBox, QSplitter, QLabel,
-    QWidget, QHBoxLayout,
+    QWidget, QHBoxLayout, QVBoxLayout, QFrame, QSizePolicy,
 )
-from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal
-from PyQt6.QtGui import QAction, QDragEnterEvent, QDropEvent
+from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal, QSize
+from PyQt6.QtGui import QAction, QDragEnterEvent, QDropEvent, QFont, QIcon
 from models.invoice import Invoice, InvoiceStatus
 from core.ocr_engine import OcrEngine
 from core.invoice_parser import InvoiceParser
 from core.exporter import Exporter, ExportMode
 from ui.preview_panel import PreviewPanel
+from ui.theme import COLORS
 
 _STATUS_ICONS = {
-    InvoiceStatus.PENDING:    "○",
-    InvoiceStatus.PROCESSING: "…",
-    InvoiceStatus.SUCCESS:    "✓",
-    InvoiceStatus.REVIEW:     "⚠",
-    InvoiceStatus.FAILED:     "✗",
+    InvoiceStatus.PENDING:    "⏳",
+    InvoiceStatus.PROCESSING: "🔄",
+    InvoiceStatus.SUCCESS:    "✅",
+    InvoiceStatus.REVIEW:     "⚠️",
+    InvoiceStatus.FAILED:     "❌",
 }
 
-_STATUS_LABELS: dict[str, tuple[str, str]] = {
-    InvoiceStatus.PENDING:    ("等待",   "#888888"),
-    InvoiceStatus.PROCESSING: ("识别中", "#4a9eff"),
-    InvoiceStatus.SUCCESS:    ("完成",   "#4caf50"),
-    InvoiceStatus.REVIEW:     ("需复核", "#ff9800"),
-    InvoiceStatus.FAILED:     ("失败",   "#f44336"),
+_STATUS_STYLES: dict[str, dict] = {
+    InvoiceStatus.PENDING: {
+        "text": "等待",
+        "color": COLORS["text_muted"],
+        "bg": COLORS["bg_app"],
+    },
+    InvoiceStatus.PROCESSING: {
+        "text": "识别中",
+        "color": COLORS["info"],
+        "bg": COLORS["info_bg"],
+    },
+    InvoiceStatus.SUCCESS: {
+        "text": "完成",
+        "color": COLORS["success"],
+        "bg": COLORS["success_bg"],
+    },
+    InvoiceStatus.REVIEW: {
+        "text": "需复核",
+        "color": COLORS["warning"],
+        "bg": COLORS["warning_bg"],
+    },
+    InvoiceStatus.FAILED: {
+        "text": "失败",
+        "color": COLORS["danger"],
+        "bg": COLORS["danger_bg"],
+    },
 }
 
 
@@ -34,20 +55,59 @@ class _FileListItem(QWidget):
     def __init__(self, filename: str, parent=None):
         super().__init__(parent)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(10)
+
+        # filename with icon
         self._name_label = QLabel(self)
-        self._status_label = QLabel(self)
+        self._name_label.setStyleSheet(f"font-size: 13px; color: {COLORS['text_primary']};")
+
+        # status badge
+        self._status_badge = QLabel(self)
+        self._status_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._status_badge.setFixedHeight(24)
+        self._status_badge.setMinimumWidth(56)
+
         layout.addWidget(self._name_label)
         layout.addStretch()
-        layout.addWidget(self._status_label)
+        layout.addWidget(self._status_badge)
         self.update_status(filename, InvoiceStatus.PENDING)
 
     def update_status(self, filename: str, status: str) -> None:
-        icon = _STATUS_ICONS.get(status, "○")
-        self._name_label.setText(f"{icon} {filename}")
-        text, color = _STATUS_LABELS.get(status, ("", "#888888"))
-        self._status_label.setText(text)
-        self._status_label.setStyleSheet(f"color: {color};")
+        icon = _STATUS_ICONS.get(status, "⏳")
+        self._name_label.setText(f"{icon}  {filename}")
+
+        style = _STATUS_STYLES.get(status, _STATUS_STYLES[InvoiceStatus.PENDING])
+        self._status_badge.setText(style["text"])
+        self._status_badge.setStyleSheet(
+            f"color: {style['color']}; background: {style['bg']}; "
+            f"border-radius: 12px; padding: 2px 10px; font-size: 11px; font-weight: 600;"
+        )
+
+
+class _EmptyState(QWidget):
+    """Placeholder shown when no files are loaded."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        icon = QLabel("📄", self)
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setStyleSheet("font-size: 48px;")
+
+        title = QLabel("拖拽发票文件到此处", self)
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet(f"font-size: 15px; font-weight: 600; color: {COLORS['text_secondary']};")
+
+        subtitle = QLabel("或使用工具栏添加 PDF / PNG 文件", self)
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setStyleSheet(f"font-size: 12px; color: {COLORS['text_muted']}; margin-top: 4px;")
+
+        layout.addWidget(icon)
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
 
 
 def _find_duplicates(invoices: list[Invoice]) -> list[tuple[str, str]]:
@@ -120,49 +180,119 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("发票扫描识别系统")
-        self.setMinimumSize(1000, 600)
+        self.setMinimumSize(1100, 680)
+        self.resize(1280, 760)
         self.setAcceptDrops(True)
         self._file_paths: list[str] = []
         self._invoices: list[Invoice] = []
         self._item_widgets: list[_FileListItem] = []
         self._setup_ui()
 
+    # ── UI construction ───────────────────────────────────────────────
     def _setup_ui(self) -> None:
+        # --- toolbar ---
         toolbar = QToolBar(self)
+        toolbar.setMovable(False)
+        toolbar.setIconSize(QSize(20, 20))
         self.addToolBar(toolbar)
+
         for label, slot in [("选择文件", self._on_add_files),
-                             ("选择文件夹", self._on_add_folder),
-                             ("清空列表", self._on_clear)]:
+                             ("选择文件夹", self._on_add_folder)]:
             act = QAction(label, self)
             act.triggered.connect(slot)
             toolbar.addAction(act)
+
+        clear_act = QAction("清空列表", self)
+        clear_act.setProperty("action-danger", True)
+        clear_act.triggered.connect(self._on_clear)
+        toolbar.addAction(clear_act)
+
         toolbar.addSeparator()
-        start_act = QAction("开始识别", self)
+
+        start_act = QAction("▶ 开始识别", self)
+        start_act.setProperty("action-primary", True)
         start_act.triggered.connect(self._on_start_ocr)
         toolbar.addAction(start_act)
-        self._cancel_act = QAction("取消识别", self)
+
+        self._cancel_act = QAction("✕ 取消识别", self)
+        self._cancel_act.setProperty("action-danger", True)
         self._cancel_act.triggered.connect(self._on_cancel)
         self._cancel_act.setVisible(False)
         toolbar.addAction(self._cancel_act)
 
+        # refresh toolbar to apply dynamic properties
+        toolbar.widgetForAction(start_act).setProperty("action-primary", True)
+        toolbar.widgetForAction(start_act).setStyleSheet(
+            f"background: {COLORS['primary']}; color: {COLORS['text_inverse']}; "
+            f"border-radius: 6px; padding: 7px 18px; font-weight: 600;"
+        )
+        self._start_btn = toolbar.widgetForAction(start_act)
+        self._cancel_widget = toolbar.widgetForAction(self._cancel_act)
+
+        # --- main content ---
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
         self.setCentralWidget(splitter)
 
+        # left: file panel
+        left_panel = QWidget(self)
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(0)
+
+        # panel header
+        header = QFrame(self)
+        header.setFixedHeight(44)
+        header.setStyleSheet(
+            f"background: {COLORS['bg_surface']}; border-bottom: 1px solid {COLORS['border']};"
+        )
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(16, 0, 16, 0)
+        header_label = QLabel("📋 文件列表", self)
+        header_label.setStyleSheet(
+            f"font-size: 14px; font-weight: 600; color: {COLORS['text_primary']};"
+        )
+        self._count_badge = QLabel("0", self)
+        self._count_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._count_badge.setFixedSize(28, 20)
+        self._count_badge.setStyleSheet(
+            f"background: {COLORS['primary_light']}; color: {COLORS['primary']}; "
+            f"border-radius: 10px; font-size: 11px; font-weight: 700;"
+        )
+        header_layout.addWidget(header_label)
+        header_layout.addStretch()
+        header_layout.addWidget(self._count_badge)
+        left_layout.addWidget(header)
+
+        # file list
         self._file_list = QListWidget(self)
         self._file_list.currentRowChanged.connect(self._on_file_selected)
-        splitter.addWidget(self._file_list)
+        left_layout.addWidget(self._file_list)
 
+        # empty state overlay
+        self._empty_state = _EmptyState(self)
+        self._empty_state.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        left_layout.addWidget(self._empty_state)
+        self._empty_state.setVisible(True)
+        self._file_list.setVisible(False)
+
+        splitter.addWidget(left_panel)
+
+        # right: preview
         self._preview = PreviewPanel(self)
         self._preview.invoice_changed.connect(self._on_invoice_changed)
         self._preview.export_requested.connect(self._on_export)
         splitter.addWidget(self._preview)
-        splitter.setSizes([350, 650])
+        splitter.setSizes([380, 900])
 
+        # --- status bar ---
         status_bar = QStatusBar(self)
         self.setStatusBar(status_bar)
-        self._stats_label = QLabel("文件数: 0", self)
+        self._stats_label = QLabel(self)
+        self._stats_label.setStyleSheet("padding: 0 8px;")
         status_bar.addWidget(self._stats_label)
+        self._update_stats()
 
+    # ── Drag & Drop ───────────────────────────────────────────────────
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
@@ -178,6 +308,7 @@ class MainWindow(QMainWindow):
                 paths.append(path)
         self._add_files(paths)
 
+    # ── File management ───────────────────────────────────────────────
     def _on_add_files(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(self, "选择发票文件", "", "发票文件 (*.pdf *.png)")
         self._add_files(paths)
@@ -196,6 +327,8 @@ class MainWindow(QMainWindow):
         self._file_list.clear()
         self._preview.clear()
         self._update_stats()
+        self._empty_state.setVisible(True)
+        self._file_list.setVisible(False)
 
     def _add_files(self, paths: list[str]) -> None:
         existing = set(self._file_paths)
@@ -210,6 +343,9 @@ class MainWindow(QMainWindow):
                 self._file_list.addItem(item)
                 self._file_list.setItemWidget(item, widget)
                 self._item_widgets.append(widget)
+        if self._file_paths:
+            self._empty_state.setVisible(False)
+            self._file_list.setVisible(True)
         self._update_stats()
 
     def _on_file_selected(self, row: int) -> None:
@@ -222,6 +358,7 @@ class MainWindow(QMainWindow):
             self._invoices[row] = invoice
             self._item_widgets[row].update_status(invoice.source_file, invoice.status)
 
+    # ── OCR ───────────────────────────────────────────────────────────
     def _on_cancel(self) -> None:
         if hasattr(self, "_worker"):
             self._worker.cancel()
@@ -231,6 +368,11 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "提示", "请先添加发票文件")
             return
         self._cancel_act.setVisible(True)
+        self._start_btn.setEnabled(False)
+        self._start_btn.setStyleSheet(
+            f"background: {COLORS['text_muted']}; color: {COLORS['text_inverse']}; "
+            f"border-radius: 6px; padding: 7px 18px; font-weight: 600;"
+        )
         self._worker = _OcrWorker(self._file_paths)
         self._thread = QThread()
         self._worker.moveToThread(self._thread)
@@ -257,10 +399,13 @@ class MainWindow(QMainWindow):
     def _on_ocr_finished(self) -> None:
         logging.info("_on_ocr_finished: start")
         self._thread.quit()
-        logging.info("_on_ocr_finished: after quit")
         self._thread.wait(3000)
-        logging.info("_on_ocr_finished: after wait")
         self._cancel_act.setVisible(False)
+        self._start_btn.setEnabled(True)
+        self._start_btn.setStyleSheet(
+            f"background: {COLORS['primary']}; color: {COLORS['text_inverse']}; "
+            f"border-radius: 6px; padding: 7px 18px; font-weight: 600;"
+        )
         for invoice, widget in zip(self._invoices, self._item_widgets):
             widget.update_status(invoice.source_file, invoice.status)
         self._update_stats()
@@ -272,6 +417,7 @@ class MainWindow(QMainWindow):
             )
             QMessageBox.warning(self, "重复发票提示", msg)
 
+    # ── Export ────────────────────────────────────────────────────────
     def _on_export(self) -> None:
         if not self._invoices:
             QMessageBox.information(self, "提示", "没有可导出的数据")
@@ -297,11 +443,20 @@ class MainWindow(QMainWindow):
             logging.exception("Export failed: %s", path)
             QMessageBox.critical(self, "导出失败", str(exc))
 
+    # ── Stats ─────────────────────────────────────────────────────────
     def _update_stats(self) -> None:
         total   = len(self._invoices)
         success = sum(1 for i in self._invoices if i.status == InvoiceStatus.SUCCESS)
         review  = sum(1 for i in self._invoices if i.status == InvoiceStatus.REVIEW)
         failed  = sum(1 for i in self._invoices if i.status == InvoiceStatus.FAILED)
-        self._stats_label.setText(
-            f"文件数: {total}   已完成: {success}   需复核: {review}   失败: {failed}"
-        )
+
+        self._count_badge.setText(str(total))
+
+        parts = [f"总计 <b>{total}</b>"]
+        if success:
+            parts.append(f"<span style='color:{COLORS['success']}'>✓ 完成 {success}</span>")
+        if review:
+            parts.append(f"<span style='color:{COLORS['warning']}'>⚠ 复核 {review}</span>")
+        if failed:
+            parts.append(f"<span style='color:{COLORS['danger']}'>✗ 失败 {failed}</span>")
+        self._stats_label.setText("　　".join(parts))
