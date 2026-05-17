@@ -3,6 +3,7 @@ import logging
 from PyQt6.QtWidgets import (
     QMainWindow, QListWidget, QListWidgetItem, QToolBar,
     QStatusBar, QFileDialog, QMessageBox, QSplitter, QLabel,
+    QWidget, QHBoxLayout,
 )
 from PyQt6.QtCore import Qt, QThread, QObject, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QDragEnterEvent, QDropEvent
@@ -28,6 +29,26 @@ _STATUS_LABELS: dict[str, tuple[str, str]] = {
     InvoiceStatus.REVIEW:     ("需复核", "#ff9800"),
     InvoiceStatus.FAILED:     ("失败",   "#f44336"),
 }
+
+
+class _FileListItem(QWidget):
+    def __init__(self, filename: str, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 2, 4, 2)
+        self._name_label = QLabel(self)
+        self._status_label = QLabel(self)
+        layout.addWidget(self._name_label)
+        layout.addStretch()
+        layout.addWidget(self._status_label)
+        self.update_status(filename, InvoiceStatus.PENDING)
+
+    def update_status(self, filename: str, status: str) -> None:
+        icon = _STATUS_ICONS.get(status, "○")
+        self._name_label.setText(f"{icon} {filename}")
+        text, color = _STATUS_LABELS.get(status, ("", "#888888"))
+        self._status_label.setText(text)
+        self._status_label.setStyleSheet(f"color: {color};")
 
 
 def _find_duplicates(invoices: list[Invoice]) -> list[tuple[str, str]]:
