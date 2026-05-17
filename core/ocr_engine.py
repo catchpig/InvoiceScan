@@ -7,8 +7,8 @@ _PDF_DPI = 200
 
 class OcrEngine:
     def __init__(self):
-        from paddleocr import PaddleOCR
-        self._ocr = PaddleOCR(use_angle_cls=True, lang='ch')
+        import easyocr
+        self._reader = easyocr.Reader(['ch_sim', 'en'], gpu=False)
 
     def extract_text_from_file(self, file_path: str) -> list[str]:
         ext = os.path.splitext(file_path)[1].lower()
@@ -38,25 +38,17 @@ class OcrEngine:
             tmp_path = tmp.name
             img.save(tmp_path)
         try:
-            result = self._ocr.ocr(tmp_path, cls=True)
+            result = self._reader.readtext(tmp_path)
             return self._parse_ocr_result(result)
         finally:
             os.unlink(tmp_path)
 
     def _parse_ocr_result(self, result) -> list[str]:
+        # EasyOCR 返回格式：[(bbox, text, confidence), ...]
         if not result:
             return []
-        texts = []
-        for page in result:
-            if not page:
-                continue
-            for line in page:
-                text_info = line[1]
-                if isinstance(text_info, (list, tuple)) and len(text_info) == 2:
-                    text, confidence = text_info
-                else:
-                    text = str(text_info)
-                    confidence = 1.0
-                if confidence >= _CONFIDENCE_THRESHOLD:
-                    texts.append(text)
-        return texts
+        return [
+            text
+            for (_bbox, text, confidence) in result
+            if confidence >= _CONFIDENCE_THRESHOLD
+        ]
