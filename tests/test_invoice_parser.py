@@ -129,3 +129,9 @@ def test_parse_invoice_type_ocr_truncated_to_电子发():
     # OCR 将发票类型截断为"电子发"时，解析器仍应返回正确类型
     inv = InvoiceParser().parse(ETICKET_TEXTS, "发票pdf.pdf")
     assert inv.invoice_type == "电子发票（普通发票）"
+
+
+def test_parse_seller_tax_id_with_letter_x():
+    # 税号末位含字母 X（如 9151010033204312X9）不应被 normalize 误替换为 ¥
+    inv = InvoiceParser().parse(ETICKET_TEXTS, "发票pdf.pdf")
+    assert inv.seller_tax_id == "9151010033204312X9"

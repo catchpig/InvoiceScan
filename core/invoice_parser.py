@@ -83,9 +83,9 @@ class InvoiceParser:
         text = re.sub(r'[？?]0(\d{2})年', r'20\1年', text)
         # 修正日期中被丢失的十位数字：月.3日 → 月13日（'1' 被误读为 '.'）
         text = re.sub(r'(\d{1,2}月)\.(\d)日', r'\g<1>1\2日', text)
-        # 修正 ¥ 被 RapidOCR 误读为 Y 或 X（非字母开头、后跟数字）
-        text = re.sub(r'(?<![A-Za-z])Y(\d)', r'¥\1', text)
-        text = re.sub(r'(?<![A-Za-z])X(\d)', r'¥\1', text)
+        # 修正 ¥ 被 RapidOCR 误读为 Y 或 X（非字母/数字前缀，避免误替换税号末位字母）
+        text = re.sub(r'(?<![A-Za-z0-9])Y(\d)', r'¥\1', text)
+        text = re.sub(r'(?<![A-Za-z0-9])X(\d)', r'¥\1', text)
         # 修正小数点后的空格："327. 44" → "327.44"
         text = re.sub(r'(\d)\. (\d)', r'\1.\2', text)
         return text

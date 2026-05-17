@@ -1,5 +1,5 @@
 from models.invoice import Invoice, InvoiceStatus
-from ui.main_window import _find_duplicates, _STATUS_LABELS
+from ui.main_window import _find_duplicates, _STATUS_STYLES
 
 
 def test_find_duplicates_same_code_and_number():
@@ -37,20 +37,18 @@ def test_find_duplicates_reports_each_key_once():
     assert len(result) == 1
 
 
-def test_status_labels_covers_all_statuses():
+def test_status_styles_covers_all_statuses():
     for status in [
         InvoiceStatus.PENDING, InvoiceStatus.PROCESSING,
         InvoiceStatus.SUCCESS, InvoiceStatus.REVIEW, InvoiceStatus.FAILED,
     ]:
-        assert status in _STATUS_LABELS, f"缺少状态: {status}"
-        text, color = _STATUS_LABELS[status]
-        assert text, f"{status} 的文字为空"
-        assert color.startswith("#"), f"{status} 的颜色格式错误: {color}"
+        assert status in _STATUS_STYLES, f"缺少状态: {status}"
+        assert _STATUS_STYLES[status].get("text"), f"{status} 的文字为空"
 
 
-def test_status_labels_text_values():
-    assert _STATUS_LABELS[InvoiceStatus.PENDING][0]    == "等待"
-    assert _STATUS_LABELS[InvoiceStatus.PROCESSING][0] == "识别中"
-    assert _STATUS_LABELS[InvoiceStatus.SUCCESS][0]    == "完成"
-    assert _STATUS_LABELS[InvoiceStatus.REVIEW][0]     == "需复核"
-    assert _STATUS_LABELS[InvoiceStatus.FAILED][0]     == "失败"
+def test_status_styles_text_values():
+    assert _STATUS_STYLES[InvoiceStatus.PENDING]["text"]    == "等待"
+    assert _STATUS_STYLES[InvoiceStatus.PROCESSING]["text"] == "识别中"
+    assert _STATUS_STYLES[InvoiceStatus.SUCCESS]["text"]    == "完成"
+    assert _STATUS_STYLES[InvoiceStatus.REVIEW]["text"]     == "需复核"
+    assert _STATUS_STYLES[InvoiceStatus.FAILED]["text"]     == "失败"
