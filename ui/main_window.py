@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QListWidget, QListWidgetItem, QToolBar,
     QStatusBar, QFileDialog, QMessageBox, QSplitter, QLabel, QPushButton,
 )
-from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QObject, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QDragEnterEvent, QDropEvent
 from models.invoice import Invoice, InvoiceStatus
 from core.ocr_engine import OcrEngine
@@ -40,6 +40,7 @@ class _OcrWorker(QObject):
     progress = pyqtSignal(int, str)
     invoice_done = pyqtSignal(int, Invoice)
     finished = pyqtSignal()
+    model_status = pyqtSignal(str)
 
     def __init__(self, file_paths: list[str]):
         super().__init__()
@@ -50,7 +51,18 @@ class _OcrWorker(QObject):
         self._cancelled = True
 
     def run(self) -> None:
-        engine = OcrEngine()
+        try:
+            engine = OcrEngine()
+        except Exception as exc:
+            for i, path in enumerate(self._file_paths):
+                self.invoice_done.emit(i, Invoice(
+                    source_file=os.path.basename(path),
+                    status=InvoiceStatus.FAILED,
+                    error_message=f"OCR引擎初始化失败：{exc}",
+                ))
+            self.finished.emit()
+            return
+        self.model_status.emit("")  # 初始化完成，切换到文件处理模式
         parser = InvoiceParser()
         for i, path in enumerate(self._file_paths):
             if self._cancelled:
@@ -176,12 +188,21 @@ class MainWindow(QMainWindow):
         self._thread = QThread(self)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
+        self._worker.model_status.connect(self._on_model_status)
         self._worker.progress.connect(self._on_ocr_progress)
         self._worker.invoice_done.connect(self._on_invoice_done)
         self._worker.finished.connect(self._on_ocr_finished)
         self._progress_dlg.rejected.connect(self._worker.cancel)
-        self._thread.start()
+        # 用 singleShot(0) 确保 exec() 先建好事件循环再启动线程，
+        # 避免 RapidOCR 过快完成时信号堆积导致弹窗"闪退"
+        QTimer.singleShot(0, self._thread.start)
         self._progress_dlg.exec()
+
+    def _on_model_status(self, message: str) -> None:
+        if message:
+            self._progress_dlg.set_loading_model(message)
+        else:
+            self._progress_dlg.set_processing()
 
     def _on_ocr_progress(self, current: int, filename: str) -> None:
         self._progress_dlg.update_progress(current, filename)
@@ -195,6 +216,8 @@ class MainWindow(QMainWindow):
         if item:
             icon = _STATUS_ICONS.get(invoice.status, "○")
             item.setText(f"{icon} {invoice.source_file}")
+        if self._file_list.currentRow() == row:
+            self._preview.show_invoice(invoice)
         self._update_stats()
 
     def _on_ocr_finished(self) -> None:

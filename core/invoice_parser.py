@@ -13,7 +13,8 @@ _RE_NUMBER      = re.compile(r'(?:发票号码|岌采号[玛码罚])[：:]\s*[_]
 _RE_NUMBER_LONG = re.compile(r'(?<!\d)(\d{20})(?!\d)')
 _RE_DATE        = re.compile(r'(?:开票|开采)日期[：:]\s*(\d{4})[年](\d{1,2})[月](\d{1,2})[日0]?')
 _RE_TAX_ID      = re.compile(r'(?:纳税人识别号|统一社会信用代码)[：:]\s*([A-Za-z0-9]{15,20})')
-_RE_TAX_RATE    = re.compile(r'税率\s*[：:]?\s*(\d+%|免税|零税率)')
+_RE_TAX_RATE         = re.compile(r'税率\s*[：:]?\s*(\d+%|免税|零税率)')
+_RE_TAX_RATE_LINE    = re.compile(r'(?:^|\n)(\d{1,2}%)(?:\n|$)', re.MULTILINE)
 _RE_TOTAL_LOWER = re.compile(r'[（(](?:小写|小召)[）)]\s*[¥￥4]?\s*([\d,]+\.?\d*)')
 _RE_AMOUNT      = re.compile(r'[¥￥]\s*([\d,]+\.?\d*)')
 _RE_TAX_AMOUNT  = re.compile(r'税额\s*\n\s*[¥￥]\s*([\d,]+\.?\d*)')
@@ -44,7 +45,9 @@ class InvoiceParser:
         invoice.invoice_date   = self._extract_date(full_text)
         invoice.buyer_name, invoice.buyer_tax_id   = self._extract_party(full_text, "购买方", 0)
         invoice.seller_name, invoice.seller_tax_id = self._extract_party(full_text, "销售方", 1)
-        invoice.tax_rate       = self._search(full_text, _RE_TAX_RATE, 1)
+        invoice.tax_rate = self._search(full_text, _RE_TAX_RATE, 1)
+        if not invoice.tax_rate:
+            invoice.tax_rate = self._search(full_text, _RE_TAX_RATE_LINE, 1)
         invoice.total_amount   = self._extract_total(full_text)
         invoice.tax_amount, invoice.subtotal = self._extract_sub_amounts(full_text)
         if invoice.total_amount and invoice.tax_amount and not invoice.subtotal:
@@ -60,6 +63,11 @@ class InvoiceParser:
         text = re.sub(r'[？?]0(\d{2})年', r'20\1年', text)
         # 修正日期中被丢失的十位数字：月.3日 → 月13日（'1' 被误读为 '.'）
         text = re.sub(r'(\d{1,2}月)\.(\d)日', r'\g<1>1\2日', text)
+        # 修正 ¥ 被 RapidOCR 误读为 Y 或 X（非字母开头、后跟数字）
+        text = re.sub(r'(?<![A-Za-z])Y(\d)', r'¥\1', text)
+        text = re.sub(r'(?<![A-Za-z])X(\d)', r'¥\1', text)
+        # 修正小数点后的空格："327. 44" → "327.44"
+        text = re.sub(r'(\d)\. (\d)', r'\1.\2', text)
         return text
 
     def _find_invoice_type(self, texts: list[str]) -> str:
@@ -88,21 +96,36 @@ class InvoiceParser:
         return f"{m.group(1)}-{m.group(2).zfill(2)}-{m.group(3).zfill(2)}"
 
     def _extract_party(self, text: str, party: str, tax_index: int) -> tuple[str, str]:
-        name_pat = re.compile(rf'{party}名称[：:]\s*(.+)')
+        name_pat = re.compile(rf'{party}名称[：:]\s*([^\n]+)')
         m = name_pat.search(text)
         if m:
             name = m.group(1).strip()
         else:
-            # 回退：按出现顺序使用 "名称：" 匹配（购买方=第0个，销售方=第1个）
-            # 使用非贪婪匹配，避免把公司名首字被归入前缀
-            all_names = re.findall(r'名.{0,3}?[：:]\s*(.+)', text)
-            party_idx = 0 if '购买' in party else 1
-            raw = all_names[party_idx].strip() if len(all_names) > party_idx else ""
-            # 去除 OCR 在公司名中残留的冒号（字符误识别产物）
-            name = re.sub(r'[：:]', '', raw).strip()
+            # 次选：在"购买方信息"或"销售方信息" section 内查找紧随的名称行
+            # re.DOTALL 让 .{0,200}? 能跨行匹配，[^\n]+ 限制捕获到行尾
+            section_pat = re.compile(rf'{party}信息.{{0,200}}?名.{{0,3}}?[：:]\s*([^\n]+)', re.DOTALL)
+            m = section_pat.search(text)
+            if m:
+                name = re.sub(r'[：:]', '', m.group(1)).strip()
+            else:
+                # 最终回退：按出现顺序使用 "名称：" 匹配（购买方=第0个，销售方=第1个）
+                all_names = re.findall(r'名.{0,3}?[：:]\s*([^\n]+)', text)
+                party_idx = 0 if '购买' in party else 1
+                raw = all_names[party_idx].strip() if len(all_names) > party_idx else ""
+                name = re.sub(r'[：:]', '', raw).strip()
 
-        tax_ids = _RE_TAX_ID.findall(text)
-        tax_id = tax_ids[tax_index] if len(tax_ids) > tax_index else ""
+        # 税号：优先从对应方的 section 内查找，避免买方无税号时索引偏移
+        section_boundary = '销售方信息' if '购买' in party else None
+        if '购买' in party:
+            sec_m = re.search(r'购买方信息([\s\S]*?)(?:销售方信息|$)', text)
+        else:
+            sec_m = re.search(r'销售方信息([\s\S]*)', text)
+        if sec_m:
+            ids_in_sec = _RE_TAX_ID.findall(sec_m.group(1))
+            tax_id = ids_in_sec[0] if ids_in_sec else ""
+        else:
+            tax_ids = _RE_TAX_ID.findall(text)
+            tax_id = tax_ids[tax_index] if len(tax_ids) > tax_index else ""
         return name, tax_id
 
     def _extract_total(self, text: str) -> Decimal:
