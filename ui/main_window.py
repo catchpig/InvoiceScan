@@ -233,7 +233,9 @@ class _OcrWorker(QObject):
                     break
                 row = self._row_indices[i] if self._row_indices else i
                 futures.append(executor.submit(self._process_file, i, path, row))
-            concurrent.futures.wait(futures)
+            if self._cancelled:
+                for f in futures:
+                    f.cancel()
         logging.info("Worker.run finished")
         self.finished.emit()
 
@@ -488,6 +490,8 @@ class MainWindow(QMainWindow):
         pending = any(inv.status == InvoiceStatus.PENDING for inv in self._invoices)
         if pending:
             self._start_ocr_for_pending()
+        else:
+            self._workers_spin.setEnabled(True)
         logging.info("_on_ocr_finished: after update_stats")
         duplicates = _find_duplicates(self._invoices)
         if duplicates:
