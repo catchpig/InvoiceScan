@@ -5,14 +5,13 @@ from PyQt6.QtWidgets import (
     QStatusBar, QFileDialog, QMessageBox, QSplitter, QLabel,
     QWidget, QHBoxLayout,
 )
-from PyQt6.QtCore import Qt, QThread, QObject, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal
 from PyQt6.QtGui import QAction, QDragEnterEvent, QDropEvent
 from models.invoice import Invoice, InvoiceStatus
 from core.ocr_engine import OcrEngine
 from core.invoice_parser import InvoiceParser
 from core.exporter import Exporter, ExportMode
 from ui.preview_panel import PreviewPanel
-from ui.progress_dialog import ProgressDialog
 
 _STATUS_ICONS = {
     InvoiceStatus.PENDING:    "○",
@@ -70,7 +69,6 @@ class _OcrWorker(QObject):
     progress = pyqtSignal(int, str)
     invoice_done = pyqtSignal(int, Invoice)
     finished = pyqtSignal()
-    model_status = pyqtSignal(str)
 
     def __init__(self, file_paths: list[str]):
         super().__init__()
@@ -96,7 +94,6 @@ class _OcrWorker(QObject):
             self.finished.emit()
             return
         logging.info("OcrEngine ready")
-        self.model_status.emit("")  # 初始化完成，切换到文件处理模式
         parser = InvoiceParser()
         for i, path in enumerate(self._file_paths):
             if self._cancelled:
@@ -143,6 +140,10 @@ class MainWindow(QMainWindow):
         start_act = QAction("开始识别", self)
         start_act.triggered.connect(self._on_start_ocr)
         toolbar.addAction(start_act)
+        self._cancel_act = QAction("取消识别", self)
+        self._cancel_act.triggered.connect(self._on_cancel)
+        self._cancel_act.setVisible(False)
+        toolbar.addAction(self._cancel_act)
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
         self.setCentralWidget(splitter)
@@ -221,35 +222,23 @@ class MainWindow(QMainWindow):
             self._invoices[row] = invoice
             self._item_widgets[row].update_status(invoice.source_file, invoice.status)
 
+    def _on_cancel(self) -> None:
+        if hasattr(self, "_worker"):
+            self._worker.cancel()
+
     def _on_start_ocr(self) -> None:
         if not self._file_paths:
             QMessageBox.information(self, "提示", "请先添加发票文件")
             return
-        logging.info("OCR started: %d file(s)", len(self._file_paths))
-        self._progress_dlg = ProgressDialog(len(self._file_paths), self)
+        self._cancel_act.setVisible(True)
         self._worker = _OcrWorker(self._file_paths)
-        self._thread = QThread()  # 无父对象，由 deleteLater 管理生命周期
+        self._thread = QThread()
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
-        self._worker.model_status.connect(self._on_model_status)
         self._worker.progress.connect(self._on_ocr_progress)
         self._worker.invoice_done.connect(self._on_invoice_done)
         self._worker.finished.connect(self._on_ocr_finished)
-        # Qt 标准清理模式：让信号驱动线程退出和对象销毁，避免主线程 wait() 阻塞崩溃
-        self._worker.finished.connect(self._thread.quit)
-        self._worker.finished.connect(self._worker.deleteLater)
-        self._thread.finished.connect(self._thread.deleteLater)
-        self._progress_dlg.rejected.connect(self._worker.cancel)
-        # 用 singleShot(0) 确保 exec() 先建好事件循环再启动线程，
-        # 避免 RapidOCR 过快完成时信号堆积导致弹窗"闪退"
-        QTimer.singleShot(0, self._thread.start)
-        self._progress_dlg.exec()
-
-    def _on_model_status(self, message: str) -> None:
-        if message:
-            self._progress_dlg.set_loading_model(message)
-        else:
-            self._progress_dlg.set_processing()
+        self._thread.start()
 
     def _on_ocr_progress(self, current: int, filename: str) -> None:
         row = current - 1
@@ -265,16 +254,16 @@ class MainWindow(QMainWindow):
         self._update_stats()
 
     def _on_ocr_finished(self) -> None:
-        success = sum(1 for i in self._invoices if i.status == InvoiceStatus.SUCCESS)
-        review  = sum(1 for i in self._invoices if i.status == InvoiceStatus.REVIEW)
-        failed  = sum(1 for i in self._invoices if i.status == InvoiceStatus.FAILED)
-        logging.info("OCR finished: total=%d success=%d review=%d failed=%d",
-                     len(self._invoices), success, review, failed)
-        self._progress_dlg.close()
+        logging.info("_on_ocr_finished: start")
+        self._thread.quit()
+        logging.info("_on_ocr_finished: after quit")
+        self._thread.wait(3000)
+        logging.info("_on_ocr_finished: after wait")
+        self._cancel_act.setVisible(False)
         self._update_stats()
+        logging.info("_on_ocr_finished: after update_stats")
         duplicates = _find_duplicates(self._invoices)
         if duplicates:
-            logging.warning("Duplicate invoices detected: %s", duplicates)
             msg = "检测到重复发票：\n" + "\n".join(
                 f"发票代码 {code}  号码 {num}" for code, num in duplicates
             )
