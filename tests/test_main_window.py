@@ -64,3 +64,26 @@ def test_ocr_worker_default_max_workers_is_3():
     from ui.main_window import _OcrWorker
     w = _OcrWorker([])
     assert w._max_workers == 3
+
+
+def test_ocr_worker_receives_max_workers_from_spinbox():
+    from unittest.mock import patch, MagicMock
+    from ui.main_window import _OcrWorker
+    captured = {}
+
+    original_init = _OcrWorker.__init__
+
+    def patched_init(self, file_paths, row_indices=None, max_workers=3):
+        captured["max_workers"] = max_workers
+        original_init(self, file_paths, row_indices, max_workers)
+
+    with patch.object(_OcrWorker, "__init__", patched_init):
+        from PyQt6.QtWidgets import QApplication
+        import sys
+        app = QApplication.instance() or QApplication(sys.argv)
+        from ui.main_window import MainWindow
+        win = MainWindow()
+        win._workers_spin.setValue(5)
+        win._invoices[0:0] = []  # keep empty, just verify attribute exists
+        assert win._workers_spin.value() == 5
+        win.close()

@@ -5,9 +5,9 @@ from PyQt6.QtWidgets import (
     QMainWindow, QListWidget, QListWidgetItem, QToolBar,
     QStatusBar, QFileDialog, QMessageBox, QSplitter, QLabel,
     QWidget, QHBoxLayout, QVBoxLayout, QFrame, QSizePolicy,
-    QProgressBar,
+    QProgressBar, QSpinBox,
 )
-from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal, QSize
+from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal, QSize, QSettings
 from PyQt6.QtGui import QAction, QDragEnterEvent, QDropEvent, QFont, QIcon
 from models.invoice import Invoice, InvoiceStatus
 from core.ocr_engine import OcrEngine
@@ -277,6 +277,19 @@ class MainWindow(QMainWindow):
         self._cancel_act.setVisible(False)
         toolbar.addAction(self._cancel_act)
 
+        toolbar.addSeparator()
+        workers_label = QLabel("并发:", self)
+        workers_label.setStyleSheet("padding: 0 4px 0 8px;")
+        toolbar.addWidget(workers_label)
+        self._workers_spin = QSpinBox(self)
+        self._workers_spin.setRange(1, 8)
+        self._workers_spin.setValue(
+            int(QSettings("InvoiceScan", "InvoiceScan").value("max_workers", 3))
+        )
+        self._workers_spin.setFixedWidth(58)
+        self._workers_spin.setToolTip("同时识别的文件数（1~8）")
+        toolbar.addWidget(self._workers_spin)
+
         # --- main content ---
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
         self.setCentralWidget(splitter)
@@ -426,8 +439,11 @@ class MainWindow(QMainWindow):
         if not pending_indices:
             return
         pending_paths = [self._file_paths[i] for i in pending_indices]
+        max_workers = self._workers_spin.value()
+        QSettings("InvoiceScan", "InvoiceScan").setValue("max_workers", max_workers)
         self._cancel_act.setVisible(True)
-        self._worker = _OcrWorker(pending_paths, pending_indices)
+        self._workers_spin.setEnabled(False)
+        self._worker = _OcrWorker(pending_paths, pending_indices, max_workers=max_workers)
         self._thread = QThread()
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
@@ -464,6 +480,7 @@ class MainWindow(QMainWindow):
         self._thread.quit()
         self._thread.wait(3000)
         self._cancel_act.setVisible(False)
+        self._workers_spin.setEnabled(True)
         for invoice, widget in zip(self._invoices, self._item_widgets):
             widget.update_status(invoice.source_file, invoice.status)
         self._update_stats()
