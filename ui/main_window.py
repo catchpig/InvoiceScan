@@ -246,9 +246,10 @@ class MainWindow(QMainWindow):
             self._item_widgets[row].update_status(filename, InvoiceStatus.PROCESSING)
 
     def _on_invoice_done(self, row: int, invoice: Invoice) -> None:
-        self._invoices[row] = invoice
-        if 0 <= row < len(self._item_widgets):
-            self._item_widgets[row].update_status(invoice.source_file, invoice.status)
+        if 0 <= row < len(self._invoices):
+            self._invoices[row] = invoice
+            if row < len(self._item_widgets):
+                self._item_widgets[row].update_status(invoice.source_file, invoice.status)
         if self._file_list.currentRow() == row:
             self._preview.show_invoice(invoice)
         self._update_stats()
@@ -260,6 +261,8 @@ class MainWindow(QMainWindow):
         self._thread.wait(3000)
         logging.info("_on_ocr_finished: after wait")
         self._cancel_act.setVisible(False)
+        for invoice, widget in zip(self._invoices, self._item_widgets):
+            widget.update_status(invoice.source_file, invoice.status)
         self._update_stats()
         logging.info("_on_ocr_finished: after update_stats")
         duplicates = _find_duplicates(self._invoices)
