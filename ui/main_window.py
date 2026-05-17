@@ -1,4 +1,5 @@
 import os
+import concurrent.futures
 import logging
 from PyQt6.QtWidgets import (
     QMainWindow, QListWidget, QListWidgetItem, QToolBar,
@@ -181,55 +182,53 @@ class _OcrWorker(QObject):
     invoice_done = pyqtSignal(int, Invoice)
     finished = pyqtSignal()
 
-    def __init__(self, file_paths: list[str], row_indices: list[int] | None = None):
+    def __init__(self, file_paths: list[str],
+                 row_indices: list[int] | None = None,
+                 max_workers: int = 3):
         super().__init__()
         self._file_paths = file_paths
-        self._row_indices = row_indices  # maps worker-local index → main list row
+        self._row_indices = row_indices
+        self._max_workers = max_workers
         self._cancelled = False
 
     def cancel(self) -> None:
         logging.info("Worker: cancel requested")
         self._cancelled = True
 
-    def run(self) -> None:
-        logging.info("Worker.run started, files=%s", self._file_paths)
+    def _process_file(self, i: int, path: str, row: int) -> None:
+        if self._cancelled:
+            return
+        self.progress.emit(row, os.path.basename(path))
+        self.file_progress.emit(row, 0)
         try:
             engine = OcrEngine()
+            parser = InvoiceParser()
+            texts = engine.extract_text_from_file(
+                path,
+                progress_callback=lambda pct, r=row: self.file_progress.emit(r, pct),
+            )
+            invoice = parser.parse(texts, source_file=os.path.basename(path))
+            logging.info("File %d done, status=%s", i, invoice.status)
         except Exception as exc:
-            logging.exception("OcrEngine init failed")
+            logging.exception("Error processing file %d: %s", i, path)
+            invoice = Invoice(
+                source_file=os.path.basename(path),
+                status=InvoiceStatus.FAILED,
+                error_message=str(exc),
+            )
+        self.invoice_done.emit(row, invoice)
+
+    def run(self) -> None:
+        logging.info("Worker.run started, files=%s", self._file_paths)
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=self._max_workers) as executor:
+            futures = []
             for i, path in enumerate(self._file_paths):
+                if self._cancelled:
+                    break
                 row = self._row_indices[i] if self._row_indices else i
-                self.invoice_done.emit(row, Invoice(
-                    source_file=os.path.basename(path),
-                    status=InvoiceStatus.FAILED,
-                    error_message=f"OCR引擎初始化失败：{exc}",
-                ))
-            self.finished.emit()
-            return
-        logging.info("OcrEngine ready")
-        parser = InvoiceParser()
-        for i, path in enumerate(self._file_paths):
-            if self._cancelled:
-                break
-            logging.info("Processing file %d: %s", i, path)
-            row = self._row_indices[i] if self._row_indices else i
-            self.progress.emit(row, os.path.basename(path))
-            self.file_progress.emit(row, 0)
-            try:
-                texts = engine.extract_text_from_file(
-                    path,
-                    progress_callback=lambda pct, r=row: self.file_progress.emit(r, pct),
-                )
-                invoice = parser.parse(texts, source_file=os.path.basename(path))
-                logging.info("File %d done, status=%s", i, invoice.status)
-            except Exception as exc:
-                logging.exception("Error processing file %d: %s", i, path)
-                invoice = Invoice(
-                    source_file=os.path.basename(path),
-                    status=InvoiceStatus.FAILED,
-                    error_message=str(exc),
-                )
-            self.invoice_done.emit(row, invoice)
+                futures.append(executor.submit(self._process_file, i, path, row))
+            concurrent.futures.wait(futures)
         logging.info("Worker.run finished")
         self.finished.emit()
 

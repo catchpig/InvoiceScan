@@ -52,3 +52,15 @@ def test_status_styles_text_values():
     assert _STATUS_STYLES[InvoiceStatus.SUCCESS]["text"]    == "完成"
     assert _STATUS_STYLES[InvoiceStatus.REVIEW]["text"]     == "需复核"
     assert _STATUS_STYLES[InvoiceStatus.FAILED]["text"]     == "失败"
+
+
+def test_ocr_worker_stores_max_workers():
+    from ui.main_window import _OcrWorker
+    w = _OcrWorker([], max_workers=5)
+    assert w._max_workers == 5
+
+
+def test_ocr_worker_default_max_workers_is_3():
+    from ui.main_window import _OcrWorker
+    w = _OcrWorker([])
+    assert w._max_workers == 3
