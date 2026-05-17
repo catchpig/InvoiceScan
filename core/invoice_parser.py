@@ -101,10 +101,10 @@ class InvoiceParser:
                 break
 
         # 全电发票补全：匹配到通用"电子发票"时根据上下文精化为子类型
-        # OCR 常将"电子发票（普通发票）"丢失"普通"两字
+        # OCR 常将"电子发票（普通发票）"丢失"普通"两字，或截断为"电子发"
         if matched in ("电子发票", ""):
             combined = '\n'.join(texts)
-            if '电子发票' in combined:
+            if '电子发' in combined:   # 涵盖完整"电子发票"和截断"电子发"两种情况
                 if '专用' in combined:
                     return '电子发票（增值税专用发票）'
                 return '电子发票（普通发票）'

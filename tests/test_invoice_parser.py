@@ -99,3 +99,33 @@ def test_parse_empty_texts_returns_failed():
 def test_parse_missing_number_returns_review():
     texts = [t for t in SAMPLE_TEXTS if "发票号码" not in t]
     assert InvoiceParser().parse(texts, "test.pdf").status == InvoiceStatus.REVIEW
+
+
+# OCR 将"电子发票（普通发票）"截断为"电子发"时，仍能识别出正确类型
+ETICKET_TEXTS = [
+    '名称：成都天投中油能源有限公司',
+    '成都天投中油能源有限公司海昌加油站028-68224969;',
+    '电子发',                                    # OCR 截断，缺少"票（普通发票）"
+    '发票号码：26512000000859495336',
+    '成品油',
+    '国家税务总局',
+    '开票日期：2026年03月05日',
+    '四川省税务局',
+    '购买方信息',
+    '名称：李涛',
+    '销售方信息',
+    '名称：成都天投中油能源有限公司',
+    '统一社会信用代码/纳税人识别号：9151010033204312X9',
+    '*汽油*92号车用汽油',
+    '13%',
+    '¥176.99',
+    '¥23.01',
+    '（小写）¥200.00',
+    '开票人：方利香',
+]
+
+
+def test_parse_invoice_type_ocr_truncated_to_电子发():
+    # OCR 将发票类型截断为"电子发"时，解析器仍应返回正确类型
+    inv = InvoiceParser().parse(ETICKET_TEXTS, "发票pdf.pdf")
+    assert inv.invoice_type == "电子发票（普通发票）"
