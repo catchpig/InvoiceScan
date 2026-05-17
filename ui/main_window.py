@@ -130,9 +130,10 @@ class _OcrWorker(QObject):
     invoice_done = pyqtSignal(int, Invoice)
     finished = pyqtSignal()
 
-    def __init__(self, file_paths: list[str]):
+    def __init__(self, file_paths: list[str], row_indices: list[int] | None = None):
         super().__init__()
         self._file_paths = file_paths
+        self._row_indices = row_indices  # maps worker-local index → main list row
         self._cancelled = False
 
     def cancel(self) -> None:
@@ -146,7 +147,8 @@ class _OcrWorker(QObject):
         except Exception as exc:
             logging.exception("OcrEngine init failed")
             for i, path in enumerate(self._file_paths):
-                self.invoice_done.emit(i, Invoice(
+                row = self._row_indices[i] if self._row_indices else i
+                self.invoice_done.emit(row, Invoice(
                     source_file=os.path.basename(path),
                     status=InvoiceStatus.FAILED,
                     error_message=f"OCR引擎初始化失败：{exc}",
@@ -159,7 +161,8 @@ class _OcrWorker(QObject):
             if self._cancelled:
                 break
             logging.info("Processing file %d: %s", i, path)
-            self.progress.emit(i + 1, os.path.basename(path))
+            row = self._row_indices[i] if self._row_indices else i
+            self.progress.emit(row, os.path.basename(path))
             try:
                 texts = engine.extract_text_from_file(path)
                 invoice = parser.parse(texts, source_file=os.path.basename(path))
@@ -171,7 +174,7 @@ class _OcrWorker(QObject):
                     status=InvoiceStatus.FAILED,
                     error_message=str(exc),
                 )
-            self.invoice_done.emit(i, invoice)
+            self.invoice_done.emit(row, invoice)
         logging.info("Worker.run finished")
         self.finished.emit()
 
@@ -202,32 +205,18 @@ class MainWindow(QMainWindow):
             act.triggered.connect(slot)
             toolbar.addAction(act)
 
+        toolbar.addSeparator()
+
         clear_act = QAction("清空列表", self)
         clear_act.setProperty("action-danger", True)
         clear_act.triggered.connect(self._on_clear)
         toolbar.addAction(clear_act)
-
-        toolbar.addSeparator()
-
-        start_act = QAction("▶ 开始识别", self)
-        start_act.setProperty("action-primary", True)
-        start_act.triggered.connect(self._on_start_ocr)
-        toolbar.addAction(start_act)
 
         self._cancel_act = QAction("✕ 取消识别", self)
         self._cancel_act.setProperty("action-danger", True)
         self._cancel_act.triggered.connect(self._on_cancel)
         self._cancel_act.setVisible(False)
         toolbar.addAction(self._cancel_act)
-
-        # refresh toolbar to apply dynamic properties
-        toolbar.widgetForAction(start_act).setProperty("action-primary", True)
-        toolbar.widgetForAction(start_act).setStyleSheet(
-            f"background: {COLORS['primary']}; color: {COLORS['text_inverse']}; "
-            f"border-radius: 6px; padding: 7px 18px; font-weight: 600;"
-        )
-        self._start_btn = toolbar.widgetForAction(start_act)
-        self._cancel_widget = toolbar.widgetForAction(self._cancel_act)
 
         # --- main content ---
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
@@ -332,6 +321,7 @@ class MainWindow(QMainWindow):
 
     def _add_files(self, paths: list[str]) -> None:
         existing = set(self._file_paths)
+        added = False
         for path in paths:
             if path not in existing:
                 self._file_paths.append(path)
@@ -343,10 +333,13 @@ class MainWindow(QMainWindow):
                 self._file_list.addItem(item)
                 self._file_list.setItemWidget(item, widget)
                 self._item_widgets.append(widget)
+                added = True
         if self._file_paths:
             self._empty_state.setVisible(False)
             self._file_list.setVisible(True)
         self._update_stats()
+        if added:
+            self._auto_start_ocr()
 
     def _on_file_selected(self, row: int) -> None:
         if 0 <= row < len(self._invoices):
@@ -359,21 +352,22 @@ class MainWindow(QMainWindow):
             self._item_widgets[row].update_status(invoice.source_file, invoice.status)
 
     # ── OCR ───────────────────────────────────────────────────────────
-    def _on_cancel(self) -> None:
-        if hasattr(self, "_worker"):
-            self._worker.cancel()
-
-    def _on_start_ocr(self) -> None:
-        if not self._file_paths:
-            QMessageBox.information(self, "提示", "请先添加发票文件")
+    def _auto_start_ocr(self) -> None:
+        """Auto-start OCR for pending files. If OCR is already running, skip —
+        _on_ocr_finished will check again for any newly added pending files."""
+        if hasattr(self, "_thread") and self._thread.isRunning():
             return
+        self._start_ocr_for_pending()
+
+    def _start_ocr_for_pending(self) -> None:
+        """Collect all PENDING invoices and start an OCR worker for them."""
+        pending_indices = [i for i, inv in enumerate(self._invoices)
+                          if inv.status == InvoiceStatus.PENDING]
+        if not pending_indices:
+            return
+        pending_paths = [self._file_paths[i] for i in pending_indices]
         self._cancel_act.setVisible(True)
-        self._start_btn.setEnabled(False)
-        self._start_btn.setStyleSheet(
-            f"background: {COLORS['text_muted']}; color: {COLORS['text_inverse']}; "
-            f"border-radius: 6px; padding: 7px 18px; font-weight: 600;"
-        )
-        self._worker = _OcrWorker(self._file_paths)
+        self._worker = _OcrWorker(pending_paths, pending_indices)
         self._thread = QThread()
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
@@ -382,8 +376,11 @@ class MainWindow(QMainWindow):
         self._worker.finished.connect(self._on_ocr_finished)
         self._thread.start()
 
-    def _on_ocr_progress(self, current: int, filename: str) -> None:
-        row = current - 1
+    def _on_cancel(self) -> None:
+        if hasattr(self, "_worker"):
+            self._worker.cancel()
+
+    def _on_ocr_progress(self, row: int, filename: str) -> None:
         if 0 <= row < len(self._item_widgets):
             self._item_widgets[row].update_status(filename, InvoiceStatus.PROCESSING)
 
@@ -401,14 +398,13 @@ class MainWindow(QMainWindow):
         self._thread.quit()
         self._thread.wait(3000)
         self._cancel_act.setVisible(False)
-        self._start_btn.setEnabled(True)
-        self._start_btn.setStyleSheet(
-            f"background: {COLORS['primary']}; color: {COLORS['text_inverse']}; "
-            f"border-radius: 6px; padding: 7px 18px; font-weight: 600;"
-        )
         for invoice, widget in zip(self._invoices, self._item_widgets):
             widget.update_status(invoice.source_file, invoice.status)
         self._update_stats()
+        # If more pending files were added while we were running, auto-continue
+        pending = any(inv.status == InvoiceStatus.PENDING for inv in self._invoices)
+        if pending:
+            self._start_ocr_for_pending()
         logging.info("_on_ocr_finished: after update_stats")
         duplicates = _find_duplicates(self._invoices)
         if duplicates:
