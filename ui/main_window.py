@@ -1,4 +1,5 @@
 import os
+import logging
 from PyQt6.QtWidgets import (
     QMainWindow, QListWidget, QListWidgetItem, QToolBar,
     QStatusBar, QFileDialog, QMessageBox, QSplitter, QLabel, QPushButton,
@@ -51,9 +52,11 @@ class _OcrWorker(QObject):
         self._cancelled = True
 
     def run(self) -> None:
+        logging.info("Worker.run started, files=%s", self._file_paths)
         try:
             engine = OcrEngine()
         except Exception as exc:
+            logging.exception("OcrEngine init failed")
             for i, path in enumerate(self._file_paths):
                 self.invoice_done.emit(i, Invoice(
                     source_file=os.path.basename(path),
@@ -62,22 +65,27 @@ class _OcrWorker(QObject):
                 ))
             self.finished.emit()
             return
+        logging.info("OcrEngine ready")
         self.model_status.emit("")  # 初始化完成，切换到文件处理模式
         parser = InvoiceParser()
         for i, path in enumerate(self._file_paths):
             if self._cancelled:
                 break
+            logging.info("Processing file %d: %s", i, path)
             self.progress.emit(i + 1, os.path.basename(path))
             try:
                 texts = engine.extract_text_from_file(path)
                 invoice = parser.parse(texts, source_file=os.path.basename(path))
+                logging.info("File %d done, status=%s", i, invoice.status)
             except Exception as exc:
+                logging.exception("Error processing file %d: %s", i, path)
                 invoice = Invoice(
                     source_file=os.path.basename(path),
                     status=InvoiceStatus.FAILED,
                     error_message=str(exc),
                 )
             self.invoice_done.emit(i, invoice)
+        logging.info("Worker.run finished")
         self.finished.emit()
 
 
@@ -221,9 +229,15 @@ class MainWindow(QMainWindow):
         self._update_stats()
 
     def _on_ocr_finished(self) -> None:
+        logging.info("_on_ocr_finished: start")
         self._thread.quit()
+        logging.info("_on_ocr_finished: after quit")
+        self._thread.wait(3000)
+        logging.info("_on_ocr_finished: after wait")
         self._progress_dlg.close()
+        logging.info("_on_ocr_finished: after close")
         self._update_stats()
+        logging.info("_on_ocr_finished: after update_stats")
         duplicates = _find_duplicates(self._invoices)
         if duplicates:
             msg = "检测到重复发票：\n" + "\n".join(

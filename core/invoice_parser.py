@@ -5,6 +5,7 @@ from models.invoice import Invoice, InvoiceStatus
 _INVOICE_TYPES = [
     "增值税专用发票", "增值税普通发票",
     "增值税电子专用发票", "增值税电子普通发票",
+    "电子发票（增值税专用发票）", "电子发票（普通发票）",
     "电子发票", "普通发票",
 ]
 
@@ -71,11 +72,25 @@ class InvoiceParser:
         return text
 
     def _find_invoice_type(self, texts: list[str]) -> str:
+        matched = ""
         for text in texts:
             for t in _INVOICE_TYPES:
                 if t in text:
-                    return t
-        return ""
+                    matched = t
+                    break
+            if matched:
+                break
+
+        # 全电发票补全：匹配到通用"电子发票"时根据上下文精化为子类型
+        # OCR 常将"电子发票（普通发票）"丢失"普通"两字
+        if matched in ("电子发票", ""):
+            combined = '\n'.join(texts)
+            if '电子发票' in combined:
+                if '专用' in combined:
+                    return '电子发票（增值税专用发票）'
+                return '电子发票（普通发票）'
+
+        return matched
 
     def _search(self, text: str, pattern: re.Pattern, group: int) -> str:
         m = pattern.search(text)
