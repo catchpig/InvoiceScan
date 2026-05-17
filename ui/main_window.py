@@ -214,7 +214,7 @@ class MainWindow(QMainWindow):
             return
         reply = QMessageBox.question(
             self, "导出模式",
-            "点击"是"→汇总模式（每张发票一行）\n点击"否"→明细模式（每条明细一行）",
+            "点击[是]→汇总模式（每张发票一行）\n点击[否]→明细模式（每条明细一行）",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         mode = ExportMode.SUMMARY if reply == QMessageBox.StandardButton.Yes else ExportMode.DETAIL
