@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QListWidget, QListWidgetItem, QToolBar,
     QStatusBar, QFileDialog, QMessageBox, QSplitter, QLabel,
     QWidget, QHBoxLayout, QVBoxLayout, QFrame, QSizePolicy,
+    QProgressBar,
 )
 from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal, QSize
 from PyQt6.QtGui import QAction, QDragEnterEvent, QDropEvent, QFont, QIcon
@@ -54,24 +55,63 @@ _STATUS_STYLES: dict[str, dict] = {
 class _FileListItem(QWidget):
     def __init__(self, filename: str, parent=None):
         super().__init__(parent)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 8, 12, 8)
-        layout.setSpacing(10)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(12, 6, 12, 6)
+        main_layout.setSpacing(4)
 
-        # filename with icon
+        # top row: filename + status badge
+        top_row = QHBoxLayout()
+        top_row.setSpacing(10)
+
         self._name_label = QLabel(self)
         self._name_label.setStyleSheet(f"font-size: 13px; color: {COLORS['text_primary']};")
 
-        # status badge
         self._status_badge = QLabel(self)
         self._status_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._status_badge.setFixedHeight(24)
         self._status_badge.setMinimumWidth(56)
 
-        layout.addWidget(self._name_label)
-        layout.addStretch()
-        layout.addWidget(self._status_badge)
+        top_row.addWidget(self._name_label)
+        top_row.addStretch()
+        top_row.addWidget(self._status_badge)
+
+        # bottom row: progress bar + percentage label
+        progress_row = QHBoxLayout()
+        progress_row.setSpacing(6)
+
+        self._progress_bar = QProgressBar(self)
+        self._progress_bar.setFixedHeight(6)
+        self._progress_bar.setTextVisible(False)
+        self._progress_bar.setMinimum(0)
+        self._progress_bar.setMaximum(100)
+        self._progress_bar.setValue(0)
+
+        self._progress_label = QLabel(self)
+        self._progress_label.setFixedWidth(36)
+        self._progress_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._progress_label.setStyleSheet(f"font-size: 11px; color: {COLORS['info']}; font-weight: 600;")
+
+        progress_row.addWidget(self._progress_bar)
+        progress_row.addWidget(self._progress_label)
+
+        main_layout.addLayout(top_row)
+        main_layout.addLayout(progress_row)
+
+        self._progress_row_visible = False
+        self._list_item: QListWidgetItem | None = None
+        self._set_progress_visible(False)
         self.update_status(filename, InvoiceStatus.PENDING)
+
+    def set_list_item(self, item: QListWidgetItem) -> None:
+        """Store reference to the owning QListWidgetItem for size updates."""
+        self._list_item = item
+
+    def _set_progress_visible(self, visible: bool) -> None:
+        self._progress_bar.setVisible(visible)
+        self._progress_label.setVisible(visible)
+        self._progress_row_visible = visible
+        if self._list_item is not None:
+            self._list_item.setSizeHint(self.sizeHint())
 
     def update_status(self, filename: str, status: str) -> None:
         icon = _STATUS_ICONS.get(status, "⏳")
@@ -83,6 +123,16 @@ class _FileListItem(QWidget):
             f"color: {style['color']}; background: {style['bg']}; "
             f"border-radius: 12px; padding: 2px 10px; font-size: 11px; font-weight: 600;"
         )
+
+        # hide progress when not processing
+        if status != InvoiceStatus.PROCESSING:
+            self._set_progress_visible(False)
+
+    def update_progress(self, percent: int) -> None:
+        """Update the progress bar and percentage label (0-100)."""
+        self._set_progress_visible(True)
+        self._progress_bar.setValue(min(max(percent, 0), 100))
+        self._progress_label.setText(f"{percent}%")
 
 
 class _EmptyState(QWidget):
@@ -127,6 +177,7 @@ def _find_duplicates(invoices: list[Invoice]) -> list[tuple[str, str]]:
 
 class _OcrWorker(QObject):
     progress = pyqtSignal(int, str)
+    file_progress = pyqtSignal(int, int)  # (row, percent 0-100)
     invoice_done = pyqtSignal(int, Invoice)
     finished = pyqtSignal()
 
@@ -163,8 +214,12 @@ class _OcrWorker(QObject):
             logging.info("Processing file %d: %s", i, path)
             row = self._row_indices[i] if self._row_indices else i
             self.progress.emit(row, os.path.basename(path))
+            self.file_progress.emit(row, 0)
             try:
-                texts = engine.extract_text_from_file(path)
+                texts = engine.extract_text_from_file(
+                    path,
+                    progress_callback=lambda pct, r=row: self.file_progress.emit(r, pct),
+                )
                 invoice = parser.parse(texts, source_file=os.path.basename(path))
                 logging.info("File %d done, status=%s", i, invoice.status)
             except Exception as exc:
@@ -329,6 +384,7 @@ class MainWindow(QMainWindow):
                 filename = os.path.basename(path)
                 item = QListWidgetItem()
                 widget = _FileListItem(filename)
+                widget.set_list_item(item)
                 item.setSizeHint(widget.sizeHint())
                 self._file_list.addItem(item)
                 self._file_list.setItemWidget(item, widget)
@@ -372,6 +428,7 @@ class MainWindow(QMainWindow):
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.progress.connect(self._on_ocr_progress)
+        self._worker.file_progress.connect(self._on_file_progress)
         self._worker.invoice_done.connect(self._on_invoice_done)
         self._worker.finished.connect(self._on_ocr_finished)
         self._thread.start()
@@ -383,6 +440,11 @@ class MainWindow(QMainWindow):
     def _on_ocr_progress(self, row: int, filename: str) -> None:
         if 0 <= row < len(self._item_widgets):
             self._item_widgets[row].update_status(filename, InvoiceStatus.PROCESSING)
+
+    def _on_file_progress(self, row: int, percent: int) -> None:
+        """Update per-file progress bar."""
+        if 0 <= row < len(self._item_widgets):
+            self._item_widgets[row].update_progress(percent)
 
     def _on_invoice_done(self, row: int, invoice: Invoice) -> None:
         if 0 <= row < len(self._invoices):
@@ -429,9 +491,12 @@ class MainWindow(QMainWindow):
             return
         logging.info("Export: mode=%s path=%s invoices=%d", mode.name, path, len(self._invoices))
         try:
-            Exporter().export(self._invoices, path, mode)
+            removed = Exporter().export(self._invoices, path, mode)
             logging.info("Export succeeded: %s", path)
-            QMessageBox.information(self, "导出成功", f"已保存到：{path}")
+            msg = f"已保存到：{path}"
+            if removed > 0:
+                msg += f"\n\n已自动去重 {removed} 张重复发票（保留最后一条）"
+            QMessageBox.information(self, "导出成功", msg)
         except PermissionError:
             logging.error("Export failed (PermissionError): %s", path)
             QMessageBox.critical(self, "导出失败", f"文件被占用，请关闭 {path} 后重试")

@@ -26,36 +26,67 @@ class OcrEngine:
         self._engine = RapidOCR()
         logging.debug("OcrEngine.__init__: done")
 
-    def extract_text_from_file(self, file_path: str) -> list[str]:
+    def extract_text_from_file(self, file_path: str,
+                               progress_callback=None) -> list[str]:
+        """Extract text from an image or PDF file.
+
+        Args:
+            file_path: Path to the file.
+            progress_callback: Optional callable(percent: int) receiving
+                progress updates from 0 to 100 for this single file.
+        """
         ext = os.path.splitext(file_path)[1].lower()
         logging.info("OCR extract: %s (type=%s)", os.path.basename(file_path), ext)
         if ext == '.pdf':
-            return self._extract_from_pdf(file_path)
-        return self.extract_text_from_image(file_path)
+            return self._extract_from_pdf(file_path, progress_callback)
+        return self.extract_text_from_image(file_path, progress_callback)
 
-    def _extract_from_pdf(self, pdf_path: str) -> list[str]:
+    def _extract_from_pdf(self, pdf_path: str,
+                          progress_callback=None) -> list[str]:
         from pdf2image import convert_from_path
         logging.debug("PDF convert: dpi=%d, poppler=%s", _PDF_DPI, _POPPLER_PATH)
+        if progress_callback:
+            progress_callback(5)
         pages = convert_from_path(pdf_path, dpi=_PDF_DPI, poppler_path=_POPPLER_PATH)
         logging.info("PDF pages: %d", len(pages))
+        if progress_callback:
+            progress_callback(10)
         texts = []
+        total_pages = len(pages)
         for idx, page in enumerate(pages):
             logging.debug("PDF page %d: size=%dx%d", idx, page.width, page.height)
-            page_texts = self._extract_from_pil_image(page)
+
+            def _page_progress(pct: int):
+                if progress_callback:
+                    page_base = int((idx / total_pages) * 80) + 10
+                    page_range = 80 // total_pages
+                    progress_callback(min(page_base + int(pct / 100 * page_range), 95))
+
+            page_texts = self._extract_from_pil_image(page, _page_progress)
             texts.extend(page_texts)
             combined = ' '.join(texts)
             if '发票代码' in combined and '发票号码' in combined:
                 logging.debug("PDF: key fields found on page %d, stopping early", idx)
                 break
+        if progress_callback:
+            progress_callback(100)
         return texts
 
-    def extract_text_from_image(self, image_path: str) -> list[str]:
+    def extract_text_from_image(self, image_path: str,
+                                progress_callback=None) -> list[str]:
         from PIL import Image
+        if progress_callback:
+            progress_callback(5)
         img = Image.open(image_path)
         logging.debug("Image opened: size=%dx%d, mode=%s", img.width, img.height, img.mode)
-        return self._extract_from_pil_image(img)
+        if progress_callback:
+            progress_callback(10)
+        result = self._extract_from_pil_image(img, progress_callback)
+        if progress_callback:
+            progress_callback(100)
+        return result
 
-    def _extract_from_pil_image(self, img) -> list[str]:
+    def _extract_from_pil_image(self, img, progress_callback=None) -> list[str]:
         import numpy as np
         import cv2
         from PIL import Image, ImageEnhance, ImageFilter
@@ -68,9 +99,13 @@ class OcrEngine:
             logging.debug("Standard pass: upscaled to %dx%d", std.width, std.height)
         std = ImageEnhance.Contrast(std).enhance(1.5)
         std = std.filter(ImageFilter.SHARPEN)
+        if progress_callback:
+            progress_callback(20)
         result_std, _ = self._engine(np.array(std))
         texts_std = self._parse_ocr_result(result_std, "standard")
         logging.debug("Standard pass: %d texts extracted", len(texts_std))
+        if progress_callback:
+            progress_callback(55)
 
         # CLAHE pass: better character-level accuracy for company names.
         # Only prepend CLAHE texts that look like company name lines so that
@@ -81,9 +116,13 @@ class OcrEngine:
         l_ch, a_ch, b_ch = cv2.split(lab)
         cl = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(l_ch)
         arr2 = cv2.cvtColor(cv2.merge((cl, a_ch, b_ch)), cv2.COLOR_LAB2RGB)
+        if progress_callback:
+            progress_callback(70)
         result_hq, _ = self._engine(arr2)
         texts_hq = self._parse_ocr_result(result_hq, "CLAHE")
         logging.debug("CLAHE pass: %d texts extracted", len(texts_hq))
+        if progress_callback:
+            progress_callback(90)
 
         # Keep only HQ texts that are company-name-like (contain company keywords)
         hq_company = [t for t in texts_hq

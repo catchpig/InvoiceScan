@@ -67,7 +67,7 @@ def test_extract_text_from_file_routes_pdf(tmp_path):
     engine, _ = _make_engine_with_mock_engine()
     with patch.object(engine, '_extract_from_pdf', return_value=["发票代码：0440000000"]) as mock_pdf:
         result = engine.extract_text_from_file(str(dummy_pdf))
-        mock_pdf.assert_called_once_with(str(dummy_pdf))
+        mock_pdf.assert_called_once_with(str(dummy_pdf), None)
     assert result == ["发票代码：0440000000"]
 
 
@@ -77,5 +77,5 @@ def test_extract_text_from_file_routes_png(tmp_path):
     engine, _ = _make_engine_with_mock_engine()
     with patch.object(engine, 'extract_text_from_image', return_value=["发票号码：12345678"]) as mock_img:
         result = engine.extract_text_from_file(str(dummy_png))
-        mock_img.assert_called_once_with(str(dummy_png))
+        mock_img.assert_called_once_with(str(dummy_png), None)
     assert result == ["发票号码：12345678"]

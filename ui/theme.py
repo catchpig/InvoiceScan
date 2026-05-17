@@ -243,4 +243,16 @@ QMessageBox QLabel {{
 QMessageBox QPushButton {{
     min-width: 72px;
 }}
+
+/* ─── Progress bar ─── */
+QProgressBar {{
+    background: {COLORS['bg_app']};
+    border: none;
+    border-radius: 3px;
+}}
+
+QProgressBar::chunk {{
+    background: {COLORS['primary']};
+    border-radius: 3px;
+}}
 """

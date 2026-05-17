@@ -29,7 +29,22 @@ _DETAIL_HEADERS = [
 
 
 class Exporter:
-    def export(self, invoices: list[Invoice], output_path: str, mode: ExportMode) -> None:
+    def export(self, invoices: list[Invoice], output_path: str,
+               mode: ExportMode, dedup: bool = True) -> int:
+        """Export invoices to Excel.
+
+        Args:
+            dedup: When True, keep only the last occurrence of invoices
+                   sharing the same (invoice_code, invoice_number).
+
+        Returns:
+            Number of duplicate invoices removed.
+        """
+        removed = 0
+        if dedup:
+            deduped, removed = self._deduplicate(invoices)
+            invoices = deduped
+
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "汇总" if mode == ExportMode.SUMMARY else "明细"
@@ -40,6 +55,45 @@ class Exporter:
             self._write_detail(ws, invoices)
 
         wb.save(output_path)
+        return removed
+
+    @staticmethod
+    def _deduplicate(invoices: list[Invoice]) -> tuple[list[Invoice], int]:
+        """Keep last occurrence when invoices are considered duplicates.
+
+        Dedup keys (tried in order, first non-empty key wins):
+        1. invoice_code + invoice_number (primary)
+        2. invoice_number only (if code is empty but number exists)
+        3. source_file (fallback — same filename likely same invoice)
+
+        Returns:
+            (deduplicated list, number of removed duplicates)
+        """
+        def _dedup_key(inv: Invoice) -> tuple | None:
+            """Return a dedup key for the invoice, or None if no key possible."""
+            if inv.invoice_code and inv.invoice_number:
+                return ("code_num", inv.invoice_code, inv.invoice_number)
+            if inv.invoice_number:
+                return ("num", inv.invoice_number)
+            if inv.source_file:
+                return ("file", inv.source_file)
+            return None
+
+        # Find the last index for each key
+        last_index: dict[tuple, int] = {}
+        for i, inv in enumerate(invoices):
+            key = _dedup_key(inv)
+            if key is not None:
+                last_index[key] = i  # later index overwrites earlier
+
+        result = []
+        for i, inv in enumerate(invoices):
+            key = _dedup_key(inv)
+            if key is None:
+                result.append(inv)  # no key → always keep
+            elif last_index[key] == i:
+                result.append(inv)  # keep only the last occurrence
+        return result, len(invoices) - len(result)
 
     def _write_summary(self, ws, invoices: list[Invoice]) -> None:
         self._write_header(ws, _SUMMARY_HEADERS)

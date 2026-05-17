@@ -152,3 +152,113 @@ def test_all_columns_have_min_width():
             assert ws.column_dimensions[get_column_letter(col_idx)].width >= _MIN_COL_WIDTH
     finally:
         os.unlink(path)
+
+
+# --- 去重相关测试 ---
+
+def test_deduplicate_keeps_last_occurrence():
+    """相同发票代码+号码出现多次时，保留最后一条。"""
+    inv1 = _make_invoice("A001", "10001")
+    inv1.buyer_name = "第一次"
+    inv2 = _make_invoice("A001", "10001")
+    inv2.buyer_name = "第二次"
+    inv3 = _make_invoice("B002", "20002")
+    with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
+        path = f.name
+    try:
+        removed = Exporter().export([inv1, inv2, inv3], path, ExportMode.SUMMARY)
+        ws = openpyxl.load_workbook(path).active
+        # 2 unique invoices (A001 deduped to 1 + B002 = 2) → header + 2 rows
+        assert ws.max_row == 3
+        assert removed == 1
+        # The remaining A001 row should be "第二次" (the last one)
+        buyer_col = 6
+        a001_row = [ws.cell(r, buyer_col).value for r in range(2, ws.max_row + 1)
+                    if ws.cell(r, 3).value == "A001"]
+        assert a001_row == ["第二次"]
+    finally:
+        os.unlink(path)
+
+
+def test_deduplicate_preserves_order():
+    """去重后保持原始顺序。"""
+    inv1 = _make_invoice("A001", "10001")
+    inv2 = _make_invoice("B002", "20002")
+    inv3 = _make_invoice("A001", "10001")  # duplicate of inv1
+    with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
+        path = f.name
+    try:
+        Exporter().export([inv1, inv2, inv3], path, ExportMode.SUMMARY)
+        ws = openpyxl.load_workbook(path).active
+        codes = [ws.cell(r, 3).value for r in range(2, ws.max_row + 1)]
+        assert codes == ["B002", "A001"]  # A001 kept at its last position
+    finally:
+        os.unlink(path)
+
+
+def test_deduplicate_keeps_entries_without_code_or_number():
+    """发票代码和号码都为空时，按 source_file fallback 去重。"""
+    inv1 = _make_invoice("A001", "10001")
+    inv2 = Invoice(source_file="unknown.pdf", invoice_code="", invoice_number="",
+                   buyer_name="无码发票1")
+    inv3 = Invoice(source_file="unknown.pdf", invoice_code="", invoice_number="",
+                   buyer_name="无码发票2")
+    inv4 = _make_invoice("A001", "10001")  # duplicate of inv1
+    with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
+        path = f.name
+    try:
+        removed = Exporter().export([inv1, inv2, inv3, inv4], path, ExportMode.SUMMARY)
+        ws = openpyxl.load_workbook(path).active
+        # inv1 deduped (code+num), inv2 deduped by source_file fallback, inv3+inv4 kept → 2 data rows
+        assert ws.max_row == 3
+        assert removed == 2
+    finally:
+        os.unlink(path)
+
+
+def test_deduplicate_by_number_only():
+    """发票代码为空但号码相同时，按号码去重。"""
+    inv1 = Invoice(source_file="a.pdf", invoice_code="", invoice_number="10001",
+                   buyer_name="第一次")
+    inv2 = Invoice(source_file="b.pdf", invoice_code="", invoice_number="10001",
+                   buyer_name="第二次")
+    with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
+        path = f.name
+    try:
+        removed = Exporter().export([inv1, inv2], path, ExportMode.SUMMARY)
+        ws = openpyxl.load_workbook(path).active
+        assert ws.max_row == 2  # header + 1 row
+        assert removed == 1
+        # Kept the last one
+        buyer_col = 6
+        assert ws.cell(2, buyer_col).value == "第二次"
+    finally:
+        os.unlink(path)
+
+
+def test_deduplicate_disabled():
+    """dedup=False 时不去重。"""
+    inv1 = _make_invoice("A001", "10001")
+    inv2 = _make_invoice("A001", "10001")
+    with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
+        path = f.name
+    try:
+        removed = Exporter().export([inv1, inv2], path, ExportMode.SUMMARY, dedup=False)
+        ws = openpyxl.load_workbook(path).active
+        assert ws.max_row == 3  # header + 2 rows
+        assert removed == 0
+    finally:
+        os.unlink(path)
+
+
+def test_deduplicate_no_duplicates():
+    """无重复时 removed=0。"""
+    invoices = [_make_invoice("A001", "10001"), _make_invoice("B002", "20002")]
+    with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
+        path = f.name
+    try:
+        removed = Exporter().export(invoices, path, ExportMode.SUMMARY)
+        assert removed == 0
+        assert openpyxl.load_workbook(path).active.max_row == 3
+    finally:
+        os.unlink(path)
