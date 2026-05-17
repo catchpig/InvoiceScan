@@ -200,6 +200,11 @@ class _OcrWorker(QObject):
             return
         self.progress.emit(row, os.path.basename(path))
         self.file_progress.emit(row, 0)
+        invoice = Invoice(
+            source_file=os.path.basename(path),
+            status=InvoiceStatus.FAILED,
+            error_message="Unknown error",
+        )
         try:
             engine = OcrEngine()
             parser = InvoiceParser()
