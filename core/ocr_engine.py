@@ -4,6 +4,17 @@ import tempfile
 _CONFIDENCE_THRESHOLD = 0.80
 _PDF_DPI = 200
 
+# 自动发现项目本地的 poppler bin 目录（Windows 免安装）
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_POPPLER_PATH: str | None = None
+for _candidate in [
+    os.path.join(_PROJECT_ROOT, 'poppler', 'poppler-24.08.0', 'Library', 'bin'),
+    os.path.join(_PROJECT_ROOT, 'poppler', 'bin'),
+]:
+    if os.path.isfile(os.path.join(_candidate, 'pdftoppm.exe')):
+        _POPPLER_PATH = _candidate
+        break
+
 
 class OcrEngine:
     def __init__(self):
@@ -18,7 +29,7 @@ class OcrEngine:
 
     def _extract_from_pdf(self, pdf_path: str) -> list[str]:
         from pdf2image import convert_from_path
-        pages = convert_from_path(pdf_path, dpi=_PDF_DPI)
+        pages = convert_from_path(pdf_path, dpi=_PDF_DPI, poppler_path=_POPPLER_PATH)
         texts = []
         for page in pages:
             page_texts = self._extract_from_pil_image(page)
