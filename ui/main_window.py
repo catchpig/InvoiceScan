@@ -127,6 +127,7 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
         self._file_paths: list[str] = []
         self._invoices: list[Invoice] = []
+        self._item_widgets: list[_FileListItem] = []
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -188,25 +189,26 @@ class MainWindow(QMainWindow):
             self._add_files(paths)
 
     def _on_clear(self) -> None:
-        logging.info("File list cleared (%d files)", len(self._file_paths))
         self._file_paths.clear()
         self._invoices.clear()
+        self._item_widgets.clear()
         self._file_list.clear()
         self._preview.clear()
         self._update_stats()
 
     def _add_files(self, paths: list[str]) -> None:
         existing = set(self._file_paths)
-        added = 0
         for path in paths:
             if path not in existing:
                 self._file_paths.append(path)
                 self._invoices.append(Invoice(source_file=os.path.basename(path)))
-                icon = _STATUS_ICONS[InvoiceStatus.PENDING]
-                self._file_list.addItem(QListWidgetItem(f"{icon} {os.path.basename(path)}"))
-                added += 1
-        if added:
-            logging.info("Added %d file(s), total=%d", added, len(self._file_paths))
+                filename = os.path.basename(path)
+                item = QListWidgetItem()
+                widget = _FileListItem(filename)
+                item.setSizeHint(widget.sizeHint())
+                self._file_list.addItem(item)
+                self._file_list.setItemWidget(item, widget)
+                self._item_widgets.append(widget)
         self._update_stats()
 
     def _on_file_selected(self, row: int) -> None:
@@ -217,8 +219,7 @@ class MainWindow(QMainWindow):
         row = self._file_list.currentRow()
         if 0 <= row < len(self._invoices):
             self._invoices[row] = invoice
-            icon = _STATUS_ICONS.get(invoice.status, "○")
-            self._file_list.item(row).setText(f"{icon} {invoice.source_file}")
+            self._item_widgets[row].update_status(invoice.source_file, invoice.status)
 
     def _on_start_ocr(self) -> None:
         if not self._file_paths:
@@ -251,17 +252,14 @@ class MainWindow(QMainWindow):
             self._progress_dlg.set_processing()
 
     def _on_ocr_progress(self, current: int, filename: str) -> None:
-        self._progress_dlg.update_progress(current, filename)
-        item = self._file_list.item(current - 1)
-        if item:
-            item.setText(f"{_STATUS_ICONS[InvoiceStatus.PROCESSING]} {filename}")
+        row = current - 1
+        if 0 <= row < len(self._item_widgets):
+            self._item_widgets[row].update_status(filename, InvoiceStatus.PROCESSING)
 
     def _on_invoice_done(self, row: int, invoice: Invoice) -> None:
         self._invoices[row] = invoice
-        item = self._file_list.item(row)
-        if item:
-            icon = _STATUS_ICONS.get(invoice.status, "○")
-            item.setText(f"{icon} {invoice.source_file}")
+        if 0 <= row < len(self._item_widgets):
+            self._item_widgets[row].update_status(invoice.source_file, invoice.status)
         if self._file_list.currentRow() == row:
             self._preview.show_invoice(invoice)
         self._update_stats()
