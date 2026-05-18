@@ -49,6 +49,36 @@ def test_export_summary_has_required_headers():
         headers = [ws.cell(1, col).value for col in range(1, ws.max_column + 1)]
         for required in ["发票代码", "发票号码", "价税合计", "购买方名称", "销售方名称"]:
             assert required in headers
+        assert "状态" not in headers
+    finally:
+        os.unlink(path)
+
+
+def test_export_skips_non_success_invoices():
+    inv_ok = _make_invoice("A001", "10001")
+    inv_fail = _make_invoice("B002", "20002")
+    inv_fail.status = InvoiceStatus.FAILED
+    inv_review = _make_invoice("C003", "30003")
+    inv_review.status = InvoiceStatus.REVIEW
+    with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
+        path = f.name
+    try:
+        Exporter().export([inv_ok, inv_fail, inv_review], path, ExportMode.SUMMARY)
+        ws = openpyxl.load_workbook(path).active
+        assert ws.max_row == 2  # 表头 + 仅 SUCCESS 的 1 行
+    finally:
+        os.unlink(path)
+
+
+def test_export_all_non_success_produces_header_only():
+    inv = _make_invoice()
+    inv.status = InvoiceStatus.FAILED
+    with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
+        path = f.name
+    try:
+        Exporter().export([inv], path, ExportMode.SUMMARY)
+        ws = openpyxl.load_workbook(path).active
+        assert ws.max_row == 1  # 仅表头，无数据行
     finally:
         os.unlink(path)
 
@@ -200,9 +230,9 @@ def test_deduplicate_keeps_entries_without_code_or_number():
     """发票代码和号码都为空时，按 source_file fallback 去重。"""
     inv1 = _make_invoice("A001", "10001")
     inv2 = Invoice(source_file="unknown.pdf", invoice_code="", invoice_number="",
-                   buyer_name="无码发票1")
+                   buyer_name="无码发票1", status=InvoiceStatus.SUCCESS)
     inv3 = Invoice(source_file="unknown.pdf", invoice_code="", invoice_number="",
-                   buyer_name="无码发票2")
+                   buyer_name="无码发票2", status=InvoiceStatus.SUCCESS)
     inv4 = _make_invoice("A001", "10001")  # duplicate of inv1
     with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
         path = f.name
@@ -219,9 +249,9 @@ def test_deduplicate_keeps_entries_without_code_or_number():
 def test_deduplicate_by_number_only():
     """发票代码为空但号码相同时，按号码去重。"""
     inv1 = Invoice(source_file="a.pdf", invoice_code="", invoice_number="10001",
-                   buyer_name="第一次")
+                   buyer_name="第一次", status=InvoiceStatus.SUCCESS)
     inv2 = Invoice(source_file="b.pdf", invoice_code="", invoice_number="10001",
-                   buyer_name="第二次")
+                   buyer_name="第二次", status=InvoiceStatus.SUCCESS)
     with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
         path = f.name
     try:

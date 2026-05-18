@@ -2,7 +2,7 @@ from enum import Enum
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
-from models.invoice import Invoice, InvoiceItem
+from models.invoice import Invoice, InvoiceItem, InvoiceStatus
 
 _MIN_COL_WIDTH = 10
 _MAX_COL_WIDTH = 50
@@ -17,7 +17,7 @@ class ExportMode(Enum):
 _SUMMARY_HEADERS = [
     "来源文件", "发票类型", "发票代码", "发票号码", "开票日期",
     "购买方名称", "购买方税号", "销售方名称", "销售方税号",
-    "不含税金额", "税率", "税额", "价税合计", "状态",
+    "不含税金额", "税率", "税额", "价税合计",
 ]
 
 _DETAIL_HEADERS = [
@@ -40,6 +40,8 @@ class Exporter:
         Returns:
             Number of duplicate invoices removed.
         """
+        invoices = [inv for inv in invoices if inv.status == InvoiceStatus.SUCCESS]
+
         removed = 0
         if dedup:
             deduped, removed = self._deduplicate(invoices)
@@ -104,7 +106,7 @@ class Exporter:
                 inv.buyer_name, inv.buyer_tax_id,
                 inv.seller_name, inv.seller_tax_id,
                 str(inv.subtotal), inv.tax_rate, str(inv.tax_amount),
-                str(inv.total_amount), inv.status,
+                str(inv.total_amount),
             ]
             for inv in invoices
         ]
