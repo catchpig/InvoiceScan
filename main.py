@@ -1,7 +1,13 @@
+import os
+# 在 ONNX/numpy/OpenBLAS 导入前限制每个引擎实例使用的线程数
+# 3 并发任务 × 2 线程 ≈ 6 线程，CPU 占用可控在 70% 左右
+os.environ.setdefault('OMP_NUM_THREADS', '2')
+os.environ.setdefault('OPENBLAS_NUM_THREADS', '2')
+os.environ.setdefault('MKL_NUM_THREADS', '2')
+
 import sys
 import traceback
 import logging
-import os
 
 _log_fmt = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
 

@@ -1,9 +1,52 @@
 import os
 import logging
+import threading
 
 _CONFIDENCE_THRESHOLD = 0.5
 _PDF_DPI = 200
 _UPSCALE_THRESHOLD = 1600  # 宽度低于此值时 2x 放大
+
+_thread_local = threading.local()
+
+# 限制同时执行 OCR 推理的线程数；3 并发文件时最多 2 个同时推理，
+# 第 3 个在前序完成后立即接续，CPU 峰值从 ~100% 降到 ~70%。
+_ocr_semaphore = threading.Semaphore(2)
+
+_ort_patched = False
+_ort_patch_lock = threading.Lock()
+
+
+def _patch_ort_thread_limits(max_threads: int = 2) -> None:
+    """给 rapidocr_onnxruntime 的 InferenceSession 创建注入线程上限。
+
+    rapidocr_onnxruntime.utils.OrtInferSession 没有设置 intra_op_num_threads，
+    默认 onnxruntime 会占满所有 CPU 核。通过替换 utils 模块中的 InferenceSession
+    引用，在 sess_options 传入前注入线程限制。
+    """
+    global _ort_patched
+    with _ort_patch_lock:
+        if _ort_patched:
+            return
+        try:
+            import rapidocr_onnxruntime.utils as _rr_utils
+            _orig_IS = _rr_utils.InferenceSession
+
+            def _limited_IS(model_path, sess_options=None, providers=None, **kw):
+                if sess_options is not None:
+                    try:
+                        sess_options.intra_op_num_threads = max_threads
+                        sess_options.inter_op_num_threads = 1
+                    except Exception:
+                        pass
+                return _orig_IS(model_path,
+                                sess_options=sess_options,
+                                providers=providers, **kw)
+
+            _rr_utils.InferenceSession = _limited_IS
+            _ort_patched = True
+            logging.debug("ORT thread limit patched: intra_op=%d", max_threads)
+        except Exception as e:
+            logging.warning("ORT thread patch failed: %s", e)
 
 # 自动发现项目本地的 poppler bin 目录（Windows 免安装）
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -21,10 +64,18 @@ logging.debug("poppler path: %s", _POPPLER_PATH)
 
 class OcrEngine:
     def __init__(self):
-        logging.debug("OcrEngine.__init__: importing RapidOCR")
+        logging.debug("OcrEngine.__init__: patching ORT + importing RapidOCR")
+        _patch_ort_thread_limits(max_threads=2)
         from rapidocr_onnxruntime import RapidOCR
         self._engine = RapidOCR()
         logging.debug("OcrEngine.__init__: done")
+
+    @staticmethod
+    def get_thread_local() -> "OcrEngine":
+        """每个工作线程只初始化一次引擎，避免重复加载 ONNX 模型。"""
+        if not hasattr(_thread_local, 'engine'):
+            _thread_local.engine = OcrEngine()
+        return _thread_local.engine
 
     def extract_text_from_file(self, file_path: str,
                                progress_callback=None) -> list[str]:
@@ -37,9 +88,10 @@ class OcrEngine:
         """
         ext = os.path.splitext(file_path)[1].lower()
         logging.info("OCR extract: %s (type=%s)", os.path.basename(file_path), ext)
-        if ext == '.pdf':
-            return self._extract_from_pdf(file_path, progress_callback)
-        return self.extract_text_from_image(file_path, progress_callback)
+        with _ocr_semaphore:
+            if ext == '.pdf':
+                return self._extract_from_pdf(file_path, progress_callback)
+            return self.extract_text_from_image(file_path, progress_callback)
 
     def _extract_from_pdf(self, pdf_path: str,
                           progress_callback=None) -> list[str]:
@@ -110,7 +162,8 @@ class OcrEngine:
         # CLAHE pass: better character-level accuracy for company names.
         # Only prepend CLAHE texts that look like company name lines so that
         # amount-related patterns in the main text remain from the standard pass.
-        arr = cv2.resize(np.array(img), (img.width * 4, img.height * 4),
+        # 使用 2x 放大（而非 4x），在识别质量和 CPU 占用之间取得平衡。
+        arr = cv2.resize(np.array(img), (img.width * 2, img.height * 2),
                          interpolation=cv2.INTER_LANCZOS4)
         lab = cv2.cvtColor(arr, cv2.COLOR_RGB2LAB)
         l_ch, a_ch, b_ch = cv2.split(lab)

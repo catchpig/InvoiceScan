@@ -99,6 +99,7 @@ class _FileListItem(QWidget):
         main_layout.addLayout(progress_row)
 
         self._progress_row_visible = False
+        self._last_progress: int = -1
         self._list_item: QListWidgetItem | None = None
         self._set_progress_visible(False)
         self.update_status(filename, InvoiceStatus.PENDING)
@@ -108,6 +109,8 @@ class _FileListItem(QWidget):
         self._list_item = item
 
     def _set_progress_visible(self, visible: bool) -> None:
+        if self._progress_row_visible == visible:
+            return
         self._progress_bar.setVisible(visible)
         self._progress_label.setVisible(visible)
         self._progress_row_visible = visible
@@ -131,8 +134,12 @@ class _FileListItem(QWidget):
 
     def update_progress(self, percent: int) -> None:
         """Update the progress bar and percentage label (0-100)."""
+        percent = min(max(percent, 0), 100)
+        if percent == self._last_progress:
+            return
+        self._last_progress = percent
         self._set_progress_visible(True)
-        self._progress_bar.setValue(min(max(percent, 0), 100))
+        self._progress_bar.setValue(percent)
         self._progress_label.setText(f"{percent}%")
 
 
@@ -206,7 +213,7 @@ class _OcrWorker(QObject):
             error_message="Unknown error",
         )
         try:
-            engine = OcrEngine()
+            engine = OcrEngine.get_thread_local()
             parser = InvoiceParser()
             texts = engine.extract_text_from_file(
                 path,
