@@ -13,11 +13,11 @@ _INVOICE_TYPES = [
 _RE_CODE        = re.compile(r'发票代码[：:]\s*(\d{10,12})')
 _RE_NUMBER      = re.compile(r'(?:发票号码|岌采号[玛码罚])[：:]\s*[_]?\s*(\d{7,20})')
 _RE_NUMBER_LONG = re.compile(r'(?<!\d)(\d{20})(?!\d)')
-_RE_DATE        = re.compile(r'(?:开票|开采)日期[：:]\s*(\d{4})[年](\d{1,2})[月](\d{1,2})[日0]?')
+_RE_DATE        = re.compile(r'开.{0,2}日期[：:]?\s*(\d{4})年?(\d{1,2})[月](\d{1,2})[日月0]?')
 _RE_TAX_ID      = re.compile(r'(?:纳税人识别号|统一社会信用代码)[：:]\s*([A-Za-z0-9]{15,20})')
 _RE_TAX_RATE         = re.compile(r'税率\s*[：:]?\s*(\d+%|免税|零税率)')
 _RE_TAX_RATE_LINE    = re.compile(r'(?:^|\n)(\d{1,2}%)(?:\n|$)', re.MULTILINE)
-_RE_TOTAL_LOWER = re.compile(r'[（(](?:小写|小召)[）)]\s*[¥￥4]?\s*([\d,]+\.?\d*)')
+_RE_TOTAL_LOWER = re.compile(r'[（(](?:小写|小召|小弓)[）)]\s*[¥￥4]?\s*([\d,]+\.?\d*)')
 _RE_AMOUNT      = re.compile(r'[¥￥]\s*([\d,]+\.?\d*)')
 _RE_TAX_AMOUNT  = re.compile(r'税额\s*\n\s*[¥￥]\s*([\d,]+\.?\d*)')
 _RE_SUBTOTAL    = re.compile(r'合计\s*\n\s*[¥￥]\s*([\d,]+\.?\d*)')
@@ -56,6 +56,11 @@ class InvoiceParser:
         invoice.tax_amount, invoice.subtotal = self._extract_sub_amounts(full_text)
         if invoice.total_amount and invoice.tax_amount and not invoice.subtotal:
             invoice.subtotal = invoice.total_amount - invoice.tax_amount
+        # 税额 OCR 轻微误读时（与 total−subtotal 相差 ≤2%），以精确计算值修正
+        if invoice.total_amount and invoice.subtotal and invoice.tax_amount:
+            expected_tax = invoice.total_amount - invoice.subtotal
+            if abs(invoice.tax_amount - expected_tax) <= invoice.total_amount * Decimal("0.02"):
+                invoice.tax_amount = expected_tax
         issuer_raw             = self._search(full_text, _RE_ISSUER, 1)
         invoice.issuer         = issuer_raw.strip()
 
@@ -88,6 +93,16 @@ class InvoiceParser:
         text = re.sub(r'(?<![A-Za-z0-9])X(\d)', r'¥\1', text)
         # 修正小数点后的空格："327. 44" → "327.44"
         text = re.sub(r'(\d)\. (\d)', r'\1.\2', text)
+        # 修正 OCR 将小数点误读为冒号：如"327: 44" → "327.44"（仅数字间的 ASCII 冒号）
+        text = re.sub(r'(\d+)\s*:\s*(\d+)', r'\1.\2', text)
+        # 修正 ¥ 金额中小数点被误读为空格、数字 4 被误读为 M：如"¥327 M4" → "¥327.44"
+        text = re.sub(r'([¥￥]\d+)\s+[Mm](\d)', r'\1.4\2', text)
+        # 修正"有限公司"中"有"字被误读为"在"：在限公司 → 有限公司
+        text = re.sub(r'在限公司', '有限公司', text)
+        # 修正"广"字被误读为"厂"（常见于地名：广汉、广州、广东等）
+        text = re.sub(r'厂([汉州东南])', r'广\1', text)
+        # 修正 OCR 在税号/编号内插入的空格：如"MA6 6M6" → "MA66M6"
+        text = re.sub(r'(?<=[A-Za-z0-9]) +(?=[A-Za-z0-9])', '', text)
         return text
 
     def _find_invoice_type(self, texts: list[str]) -> str:
@@ -153,10 +168,11 @@ class InvoiceParser:
                               party, party_idx, all_names, name)
 
         # 税号：优先从对应方的 section 内查找，避免买方无税号时索引偏移
+        # 使用宽松模式匹配 OCR 误读的方位标题（如"购方信息"/"销货方信息"）
         if '购买' in party:
-            sec_m = re.search(r'购买方信息([\s\S]*?)(?:销售方信息|$)', text)
+            sec_m = re.search(r'购.{0,2}方信息([\s\S]*?)(?:销.{0,2}方信息|$)', text)
         else:
-            sec_m = re.search(r'销售方信息([\s\S]*)', text)
+            sec_m = re.search(r'销.{0,2}方信息([\s\S]*)', text)
         if sec_m:
             ids_in_sec = _RE_TAX_ID.findall(sec_m.group(1))
             tax_id = ids_in_sec[0] if ids_in_sec else ""
@@ -189,12 +205,26 @@ class InvoiceParser:
         if tax_m:
             return self._to_decimal(tax_m.group(1)), Decimal("0")
 
-        # 最后回退：取所有 ¥ 金额列表的最后两个
+        # 最后回退：从所有 ¥ 金额中智能配对找出小计与税额
         amounts = _RE_AMOUNT.findall(text)
         total_m = _RE_TOTAL_LOWER.search(text)
         total_str = total_m.group(1) if total_m else ""
         filtered = [a for a in amounts if a != total_str]
         if len(filtered) >= 2:
+            total_dec = self._to_decimal(total_str) if total_str else Decimal("0")
+            if total_dec > Decimal("0"):
+                candidates = [self._to_decimal(a) for a in filtered]
+                best_tax, best_sub = Decimal("0"), Decimal("0")
+                best_diff = None
+                for i in range(len(candidates)):
+                    for j in range(i + 1, len(candidates)):
+                        diff = abs(candidates[i] + candidates[j] - total_dec)
+                        if best_diff is None or diff < best_diff:
+                            best_diff = diff
+                            a, b = candidates[i], candidates[j]
+                            best_tax, best_sub = (a, b) if a <= b else (b, a)
+                if best_diff is not None and best_diff <= total_dec * Decimal("0.02"):
+                    return best_tax, best_sub
             return self._to_decimal(filtered[-1]), self._to_decimal(filtered[-2])
         return Decimal("0"), Decimal("0")
 

@@ -12,7 +12,7 @@ from PyQt6.QtGui import QAction, QDragEnterEvent, QDropEvent, QFont, QIcon
 from models.invoice import Invoice, InvoiceStatus
 from core.ocr_engine import OcrEngine
 from core.invoice_parser import InvoiceParser
-from core.exporter import Exporter, ExportMode
+from core.exporter import Exporter
 from ui.preview_panel import PreviewPanel
 from ui.theme import COLORS
 
@@ -152,7 +152,7 @@ class _EmptyState(QWidget):
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet(f"font-size: 15px; font-weight: 600; color: {COLORS['text_secondary']};")
 
-        subtitle = QLabel("或使用工具栏添加 PDF / PNG 文件", self)
+        subtitle = QLabel("或使用工具栏添加 PDF / PNG / JPG 文件", self)
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         subtitle.setStyleSheet(f"font-size: 12px; color: {COLORS['text_muted']}; margin-top: 4px;")
 
@@ -366,21 +366,21 @@ class MainWindow(QMainWindow):
             path = url.toLocalFile()
             if os.path.isdir(path):
                 paths += [os.path.join(path, f) for f in os.listdir(path)
-                          if f.lower().endswith(('.pdf', '.png'))]
-            elif path.lower().endswith(('.pdf', '.png')):
+                          if f.lower().endswith(('.pdf', '.png', '.jpg', '.jpeg'))]
+            elif path.lower().endswith(('.pdf', '.png', '.jpg', '.jpeg')):
                 paths.append(path)
         self._add_files(paths)
 
     # ── File management ───────────────────────────────────────────────
     def _on_add_files(self) -> None:
-        paths, _ = QFileDialog.getOpenFileNames(self, "选择发票文件", "", "发票文件 (*.pdf *.png)")
+        paths, _ = QFileDialog.getOpenFileNames(self, "选择发票文件", "", "发票文件 (*.pdf *.png *.jpg *.jpeg)")
         self._add_files(paths)
 
     def _on_add_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "选择文件夹")
         if folder:
             paths = [os.path.join(folder, f) for f in os.listdir(folder)
-                     if f.lower().endswith(('.pdf', '.png'))]
+                     if f.lower().endswith(('.pdf', '.png', '.jpg', '.jpeg'))]
             self._add_files(paths)
 
     def _on_clear(self) -> None:
@@ -505,18 +505,12 @@ class MainWindow(QMainWindow):
         if not self._invoices:
             QMessageBox.information(self, "提示", "没有可导出的数据")
             return
-        reply = QMessageBox.question(
-            self, "导出模式",
-            "点击[是]→汇总模式（每张发票一行）\n点击[否]→明细模式（每条明细一行）",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        mode = ExportMode.SUMMARY if reply == QMessageBox.StandardButton.Yes else ExportMode.DETAIL
         path, _ = QFileDialog.getSaveFileName(self, "保存 Excel", "", "Excel 文件 (*.xlsx)")
         if not path:
             return
-        logging.info("Export: mode=%s path=%s invoices=%d", mode.name, path, len(self._invoices))
+        logging.info("Export: path=%s invoices=%d", path, len(self._invoices))
         try:
-            removed = Exporter().export(self._invoices, path, mode)
+            removed = Exporter().export(self._invoices, path)
             logging.info("Export succeeded: %s", path)
             msg = f"已保存到：{path}"
             if removed > 0:

@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from decimal import Decimal
 
 
@@ -11,14 +11,6 @@ class InvoiceStatus:
 
 
 @dataclass
-class InvoiceItem:
-    name: str = ""
-    quantity: str = ""
-    unit_price: Decimal = Decimal("0")
-    amount: Decimal = Decimal("0")
-
-
-@dataclass
 class Invoice:
     source_file: str = ""
     invoice_code: str = ""
@@ -28,7 +20,6 @@ class Invoice:
     buyer_tax_id: str = ""
     seller_name: str = ""
     seller_tax_id: str = ""
-    items: list = field(default_factory=list)
     subtotal: Decimal = Decimal("0")
     tax_rate: str = ""
     tax_amount: Decimal = Decimal("0")

@@ -3,8 +3,8 @@ import tempfile
 import openpyxl
 from decimal import Decimal
 from openpyxl.utils import get_column_letter
-from core.exporter import Exporter, ExportMode, _MIN_COL_WIDTH, _MAX_COL_WIDTH
-from models.invoice import Invoice, InvoiceItem, InvoiceStatus
+from core.exporter import Exporter, _MIN_COL_WIDTH, _MAX_COL_WIDTH
+from models.invoice import Invoice, InvoiceStatus
 
 
 def _make_invoice(code="044001900111", number="12345678") -> Invoice:
@@ -17,8 +17,6 @@ def _make_invoice(code="044001900111", number="12345678") -> Invoice:
         buyer_tax_id="914403001234567890",
         seller_name="广州YY贸易有限公司",
         seller_tax_id="914401011234567891",
-        items=[InvoiceItem(name="软件开发服务", quantity="1",
-                           unit_price=Decimal("1000.00"), amount=Decimal("1000.00"))],
         subtotal=Decimal("1000.00"),
         tax_rate="13%",
         tax_amount=Decimal("130.00"),
@@ -33,7 +31,7 @@ def test_export_summary_creates_excel():
     with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
         path = f.name
     try:
-        Exporter().export([_make_invoice()], path, ExportMode.SUMMARY)
+        Exporter().export([_make_invoice()], path)
         wb = openpyxl.load_workbook(path)
         assert wb.active.max_row == 2  # 表头 + 1 行数据
     finally:
@@ -44,7 +42,7 @@ def test_export_summary_has_required_headers():
     with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
         path = f.name
     try:
-        Exporter().export([_make_invoice()], path, ExportMode.SUMMARY)
+        Exporter().export([_make_invoice()], path)
         ws = openpyxl.load_workbook(path).active
         headers = [ws.cell(1, col).value for col in range(1, ws.max_column + 1)]
         for required in ["发票代码", "发票号码", "价税合计", "购买方名称", "销售方名称"]:
@@ -63,7 +61,7 @@ def test_export_skips_non_success_invoices():
     with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
         path = f.name
     try:
-        Exporter().export([inv_ok, inv_fail, inv_review], path, ExportMode.SUMMARY)
+        Exporter().export([inv_ok, inv_fail, inv_review], path)
         ws = openpyxl.load_workbook(path).active
         assert ws.max_row == 2  # 表头 + 仅 SUCCESS 的 1 行
     finally:
@@ -76,7 +74,7 @@ def test_export_all_non_success_produces_header_only():
     with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
         path = f.name
     try:
-        Exporter().export([inv], path, ExportMode.SUMMARY)
+        Exporter().export([inv], path)
         ws = openpyxl.load_workbook(path).active
         assert ws.max_row == 1  # 仅表头，无数据行
     finally:
@@ -87,27 +85,11 @@ def test_export_summary_data_row_values():
     with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
         path = f.name
     try:
-        Exporter().export([_make_invoice("044001900111", "12345678")], path, ExportMode.SUMMARY)
+        Exporter().export([_make_invoice("044001900111", "12345678")], path)
         ws = openpyxl.load_workbook(path).active
         row2 = [ws.cell(2, col).value for col in range(1, ws.max_column + 1)]
         assert "044001900111" in row2
         assert "12345678" in row2
-    finally:
-        os.unlink(path)
-
-
-def test_export_detail_expands_items():
-    inv = _make_invoice()
-    inv.items = [
-        InvoiceItem(name="服务A", quantity="1", unit_price=Decimal("500"), amount=Decimal("500")),
-        InvoiceItem(name="服务B", quantity="2", unit_price=Decimal("250"), amount=Decimal("500")),
-    ]
-    with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
-        path = f.name
-    try:
-        Exporter().export([inv], path, ExportMode.DETAIL)
-        ws = openpyxl.load_workbook(path).active
-        assert ws.max_row == 3  # 表头 + 2 条明细行
     finally:
         os.unlink(path)
 
@@ -117,20 +99,8 @@ def test_export_multiple_invoices_summary():
     with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
         path = f.name
     try:
-        Exporter().export(invoices, path, ExportMode.SUMMARY)
+        Exporter().export(invoices, path)
         assert openpyxl.load_workbook(path).active.max_row == 3
-    finally:
-        os.unlink(path)
-
-
-def test_export_invoice_without_items_detail():
-    inv = _make_invoice()
-    inv.items = []
-    with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
-        path = f.name
-    try:
-        Exporter().export([inv], path, ExportMode.DETAIL)
-        assert openpyxl.load_workbook(path).active.max_row == 2
     finally:
         os.unlink(path)
 
@@ -151,7 +121,7 @@ def test_column_widths_expand_for_long_text():
     with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
         path = f.name
     try:
-        Exporter().export([inv], path, ExportMode.SUMMARY)
+        Exporter().export([inv], path)
         ws = openpyxl.load_workbook(path).active
         buyer_col = get_column_letter(6)  # 购买方名称是第 6 列
         assert ws.column_dimensions[buyer_col].width > Exporter._display_width("购买方名称")
@@ -165,7 +135,7 @@ def test_column_widths_capped_at_max():
     with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
         path = f.name
     try:
-        Exporter().export([inv], path, ExportMode.SUMMARY)
+        Exporter().export([inv], path)
         ws = openpyxl.load_workbook(path).active
         assert ws.column_dimensions[get_column_letter(1)].width <= _MAX_COL_WIDTH
     finally:
@@ -176,7 +146,7 @@ def test_all_columns_have_min_width():
     with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
         path = f.name
     try:
-        Exporter().export([_make_invoice()], path, ExportMode.SUMMARY)
+        Exporter().export([_make_invoice()], path)
         ws = openpyxl.load_workbook(path).active
         for col_idx in range(1, ws.max_column + 1):
             assert ws.column_dimensions[get_column_letter(col_idx)].width >= _MIN_COL_WIDTH
@@ -196,7 +166,7 @@ def test_deduplicate_keeps_last_occurrence():
     with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
         path = f.name
     try:
-        removed = Exporter().export([inv1, inv2, inv3], path, ExportMode.SUMMARY)
+        removed = Exporter().export([inv1, inv2, inv3], path)
         ws = openpyxl.load_workbook(path).active
         # 2 unique invoices (A001 deduped to 1 + B002 = 2) → header + 2 rows
         assert ws.max_row == 3
@@ -218,7 +188,7 @@ def test_deduplicate_preserves_order():
     with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
         path = f.name
     try:
-        Exporter().export([inv1, inv2, inv3], path, ExportMode.SUMMARY)
+        Exporter().export([inv1, inv2, inv3], path)
         ws = openpyxl.load_workbook(path).active
         codes = [ws.cell(r, 3).value for r in range(2, ws.max_row + 1)]
         assert codes == ["B002", "A001"]  # A001 kept at its last position
@@ -237,7 +207,7 @@ def test_deduplicate_keeps_entries_without_code_or_number():
     with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
         path = f.name
     try:
-        removed = Exporter().export([inv1, inv2, inv3, inv4], path, ExportMode.SUMMARY)
+        removed = Exporter().export([inv1, inv2, inv3, inv4], path)
         ws = openpyxl.load_workbook(path).active
         # inv1 deduped (code+num), inv2 deduped by source_file fallback, inv3+inv4 kept → 2 data rows
         assert ws.max_row == 3
@@ -255,7 +225,7 @@ def test_deduplicate_by_number_only():
     with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
         path = f.name
     try:
-        removed = Exporter().export([inv1, inv2], path, ExportMode.SUMMARY)
+        removed = Exporter().export([inv1, inv2], path)
         ws = openpyxl.load_workbook(path).active
         assert ws.max_row == 2  # header + 1 row
         assert removed == 1
@@ -273,7 +243,7 @@ def test_deduplicate_disabled():
     with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
         path = f.name
     try:
-        removed = Exporter().export([inv1, inv2], path, ExportMode.SUMMARY, dedup=False)
+        removed = Exporter().export([inv1, inv2], path, dedup=False)
         ws = openpyxl.load_workbook(path).active
         assert ws.max_row == 3  # header + 2 rows
         assert removed == 0
@@ -287,7 +257,7 @@ def test_deduplicate_no_duplicates():
     with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
         path = f.name
     try:
-        removed = Exporter().export(invoices, path, ExportMode.SUMMARY)
+        removed = Exporter().export(invoices, path)
         assert removed == 0
         assert openpyxl.load_workbook(path).active.max_row == 3
     finally:
