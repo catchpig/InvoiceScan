@@ -38,10 +38,47 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        # easyocr 及其依赖链（项目未使用 easyocr，但 venv 中已安装）
+        'easyocr',
+        'torch', 'torchvision', 'torchaudio',
+        'torch.distributed', 'torch.testing', 'torch.ao',
+        # torch 的间接依赖
+        'sympy', 'mpmath',
+        'networkx',
+        'ninja',
+        # scikit-image 及其依赖链
+        'skimage', 'scikit_image',
+        'imageio', 'imageio_ffmpeg',
+        'tifffile',
+        'lazy_loader',
+        # scipy（scikit-image 依赖，项目无需）
+        'scipy',
+        # easyocr 专属
+        'python_bidi', 'bidi',
+        # 数据分析/可视化（项目无需）
+        'pandas', 'matplotlib', 'seaborn',
+        # 测试框架（运行时无需）
+        'pytest', 'pytest_cov', 'coverage',
+        # tkinter（使用 PyQt6，无需 tk）
+        'tkinter', '_tkinter',
+    ],
     noarchive=False,
     optimize=0,
 )
+# 移除 cv2 视频 I/O 相关 DLL（发票扫描仅需图像处理，不需视频编解码）
+# Windows 路径使用反斜杠，需同时兼容正斜杠
+_cv2_video_prefixes = (
+    'cv2\\opencv_videoio_ffmpeg',
+    'cv2/opencv_videoio_ffmpeg',
+    'cv2\\opencv_videoio_msmf',
+    'cv2/opencv_videoio_msmf',
+)
+a.binaries = [
+    x for x in a.binaries
+    if not any(x[0].startswith(p) for p in _cv2_video_prefixes)
+]
+
 pyz = PYZ(a.pure)
 
 exe = EXE(
