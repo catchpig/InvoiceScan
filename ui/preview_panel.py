@@ -30,7 +30,6 @@ _AMOUNT_FIELDS = [
     ("tax_rate",       "税率"),
     ("tax_amount",     "税额"),
     ("total_amount",   "价税合计"),
-    ("issuer",         "开票人"),
 ]
 
 _DECIMAL_FIELDS = {"subtotal", "tax_amount", "total_amount"}
