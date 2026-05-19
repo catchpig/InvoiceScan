@@ -88,9 +88,10 @@ class InvoiceParser:
         text = re.sub(r'[？?]0(\d{2})年', r'20\1年', text)
         # 修正日期中被丢失的十位数字：月.3日 → 月13日（'1' 被误读为 '.'）
         text = re.sub(r'(\d{1,2}月)\.(\d)日', r'\g<1>1\2日', text)
-        # 修正 ¥ 被 RapidOCR 误读为 Y 或 X（非字母/数字前缀，避免误替换税号末位字母）
+        # 修正 ¥ 被 RapidOCR 误读为 Y、X 或 ?（非字母/数字前缀，避免误替换税号末位字母）
         text = re.sub(r'(?<![A-Za-z0-9])Y(\d)', r'¥\1', text)
         text = re.sub(r'(?<![A-Za-z0-9])X(\d)', r'¥\1', text)
+        text = re.sub(r'(?<![A-Za-z0-9])[?？](\d)', r'¥\1', text)
         # 修正小数点后的空格："327. 44" → "327.44"
         text = re.sub(r'(\d)\. (\d)', r'\1.\2', text)
         # 修正 OCR 将小数点误读为冒号：如"327: 44" → "327.44"（仅数字间的 ASCII 冒号）
@@ -103,6 +104,8 @@ class InvoiceParser:
         text = re.sub(r'厂([汉州东南])', r'广\1', text)
         # 修正 OCR 在税号/编号内插入的空格：如"MA6 6M6" → "MA66M6"
         text = re.sub(r'(?<=[A-Za-z0-9]) +(?=[A-Za-z0-9])', '', text)
+        # 修正 Unicode 乘号 × 被误识别为 ASCII X（常见于税号末位）
+        text = re.sub(r'(?<=[A-Za-z0-9])×(?=[A-Za-z0-9])', 'X', text)
         return text
 
     def _find_invoice_type(self, texts: list[str]) -> str:
@@ -159,7 +162,7 @@ class InvoiceParser:
                 name = re.sub(r'[：:]', '', m.group(1)).strip()
                 logging.debug("  %s name (section): %r", party, name)
             else:
-                # 最终回退：按出现顺序使用 "名称：" 匹配（购买方=第0个，销售方=第1个）
+                # 第三回退：按出现顺序使用 "名称：" 匹配（购买方=第0个，销售方=第1个）
                 all_names = re.findall(r'名.{0,3}?[：:]\s*([^\n]+)', text)
                 party_idx = 0 if '购买' in party else 1
                 raw = all_names[party_idx].strip() if len(all_names) > party_idx else ""
@@ -167,21 +170,49 @@ class InvoiceParser:
                 logging.debug("  %s name (fallback idx=%d, all=%s): %r",
                               party, party_idx, all_names, name)
 
+                # 第四回退：旧版纸质发票 OCR 将"名称："识别为"称："（丢失"名"字）
+                # 在对应方标签（"购买方"/"销售方"）前若干字符内查找最后一个"称：XXX"行
+                if not name:
+                    label_key = '购买方' if '购买' in party else '销售方'
+                    label_pos = text.rfind(label_key)
+                    if label_pos != -1:
+                        before = text[max(0, label_pos - 400): label_pos]
+                        matches = re.findall(r'称[：:]\s*([^\n]+)', before)
+                        if matches:
+                            name = matches[-1].strip()
+                            logging.debug("  %s name (label fallback): %r", party, name)
+
+                # 第五回退：旧版发票无"购买方"标签时，用空税号行作锚点（仅用于购买方）
+                # 空 "纳税人识别号：\n" 行紧随购买方名称，可作为定位锚
+                if not name and '购买' in party:
+                    empty_id_m = re.search(r'纳税人识别号[：:]\s*\n', text)
+                    if empty_id_m:
+                        before_id = text[:empty_id_m.start()]
+                        matches = re.findall(r'称[：:]\s*([^\n]+)', before_id)
+                        if matches:
+                            name = matches[-1].strip()
+                            logging.debug("  %s name (empty-id fallback): %r", party, name)
+
         # 税号：优先从对应方的 section 内查找，避免买方无税号时索引偏移
-        # 使用宽松模式匹配 OCR 误读的方位标题（如"购方信息"/"销货方信息"）
+        # 兼容"购买方信息"（全电发票）和"购买方"（旧版纸质发票）两种格式
         if '购买' in party:
-            sec_m = re.search(r'购.{0,2}方信息([\s\S]*?)(?:销.{0,2}方信息|$)', text)
+            sec_m = re.search(r'购.{0,2}方(?:信息)?([\s\S]*?)(?:销.{0,2}方|$)', text)
         else:
-            sec_m = re.search(r'销.{0,2}方信息([\s\S]*)', text)
+            sec_m = re.search(r'销.{0,2}方(?:信息)?([\s\S]*)', text)
         if sec_m:
             ids_in_sec = _RE_TAX_ID.findall(sec_m.group(1))
             tax_id = ids_in_sec[0] if ids_in_sec else ""
             logging.debug("  %s tax_id (section): %r (found=%s)", party, tax_id, ids_in_sec)
         else:
-            tax_ids = _RE_TAX_ID.findall(text)
-            tax_id = tax_ids[tax_index] if len(tax_ids) > tax_index else ""
-            logging.debug("  %s tax_id (fallback idx=%d, all=%s): %r",
-                          party, tax_index, tax_ids, tax_id)
+            # 无方标签时：若存在空"纳税人识别号：\n"行，购买方税号视为空
+            if '购买' in party and re.search(r'纳税人识别号[：:]\s*\n', text):
+                tax_id = ""
+                logging.debug("  %s tax_id (empty-line inferred): ''", party)
+            else:
+                tax_ids = _RE_TAX_ID.findall(text)
+                tax_id = tax_ids[tax_index] if len(tax_ids) > tax_index else ""
+                logging.debug("  %s tax_id (fallback idx=%d, all=%s): %r",
+                              party, tax_index, tax_ids, tax_id)
         return name, tax_id
 
     def _extract_total(self, text: str) -> Decimal:
